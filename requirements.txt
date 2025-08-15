@@ -1,0 +1,19 @@
+numpy==1.26.4
+torch==2.1.0+cpu
+torchaudio==2.1.0+cpu
+--extra-index-url https://download.pytorch.org/whl/cpu
+audiocraft==1.1.0
+spacy==3.7.2
+thinc==8.2.2
+pybind11>=2.12
+pydub
+librosa>=0.10.1
+soundfile
+requests
+scipy
+mido               # если работаешь с MIDI
+pywin32            # если автоматизация FL Studio через Windows
+librosa
+scikit-learn
+sentence-transformers
+psutil

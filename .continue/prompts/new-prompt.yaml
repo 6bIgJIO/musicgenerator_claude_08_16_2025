@@ -1,0 +1,7 @@
+name: New prompt
+version: 0.0.1
+schema: v1
+prompts:
+  - name: New prompt
+    description: New prompt
+    prompt: Прочитай все файлы проекта и исправь ошибки, препятствующие нормальному функционированию этой системы основанной на двух локальных ИИ моделях(MusicGen из AudioCraft и Llama3-music из Ollama). Мне нужен восстановленный main.py, в котором работает всё как задумано.

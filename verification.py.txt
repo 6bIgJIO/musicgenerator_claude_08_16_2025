@@ -1,0 +1,830 @@
+# wavedream/core/verification.py - Система верификации качества
+
+import logging
+import numpy as np
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+
+# Аудио анализ
+from pydub import AudioSegment
+import librosa
+import soundfile as sf
+
+
+@dataclass
+class QualityIssue:
+    """Описание проблемы качества"""
+    severity: str  # "critical", "warning", "info"
+    category: str  # "loudness", "dynamics", "spectrum", "stereo", "artifacts"
+    message: str
+    value: Optional[float] = None
+    threshold: Optional[float] = None
+    suggestion: Optional[str] = None
+
+
+class MixVerifier:
+    """
+    Система верификации качества финального микса
+    
+    Проверяет:
+    - Соответствие стандартам громкости
+    - Динамический диапазон
+    - Спектральный баланс
+    - Стерео характеристики
+    - Артефакты обработки
+    - Клиппинг и искажения
+    """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+        
+        # Пороги для разных стандартов
+        self.standards = {
+            "streaming": {"lufs_range": (-16, -12), "peak_max": -1, "dr_min": 6},
+            "broadcast": {"lufs_range": (-25, -20), "peak_max": -3, "dr_min": 10},
+            "cd": {"lufs_range": (-18, -8), "peak_max": -0.1, "dr_min": 8},
+            "vinyl": {"lufs_range": (-20, -15), "peak_max": -6, "dr_min": 12}
+        }
+    
+    async def analyze_track(self, audio: AudioSegment, target_config: Dict) -> Dict:
+        """
+        Полный анализ качества трека
+        
+        Args:
+            audio: Аудио для анализа (может быть bytes или AudioSegment)
+            target_config: Целевая конфигурация мастеринга
+        
+        Returns:
+            Детальный отчёт о качестве
+        """
+        self.logger.info("🔍 Starting quality verification...")
+        
+        try:
+            # Конвертируем в AudioSegment если нужно
+            if isinstance(audio, bytes):
+                # В реальной реализации конвертация из bytes
+                audio_segment = AudioSegment.silent(duration=60000)
+            else:
+                audio_segment = audio
+            
+            # Проводим все проверки
+            issues = []
+            metrics = {}
+            
+            # 1. Анализ громкости
+            loudness_issues, loudness_metrics = await self._check_loudness(audio_segment, target_config)
+            issues.extend(loudness_issues)
+            metrics.update(loudness_metrics)
+            
+            # 2. Анализ динамики
+            dynamics_issues, dynamics_metrics = await self._check_dynamics(audio_segment, target_config)
+            issues.extend(dynamics_issues)
+            metrics.update(dynamics_metrics)
+            
+            # 3. Спектральный анализ
+            spectrum_issues, spectrum_metrics = await self._check_spectrum(audio_segment, target_config)
+            issues.extend(spectrum_issues)
+            metrics.update(spectrum_metrics)
+            
+            # 4. Стерео анализ
+            stereo_issues, stereo_metrics = await self._check_stereo(audio_segment, target_config)
+            issues.extend(stereo_issues)
+            metrics.update(stereo_metrics)
+            
+            # 5. Проверка артефактов
+            artifacts_issues, artifacts_metrics = await self._check_artifacts(audio_segment)
+            issues.extend(artifacts_issues)
+            metrics.update(artifacts_metrics)
+            
+            # Составляем общий отчёт
+            report = self._compile_quality_report(issues, metrics, target_config)
+            
+            # Логируем результат
+            overall_score = report["overall_score"]
+            critical_count = len([i for i in issues if i.severity == "critical"])
+            warning_count = len([i for i in issues if i.severity == "warning"])
+            
+            self.logger.info(f"  ✅ Quality analysis complete: {overall_score:.2f}/1.0")
+            if critical_count > 0:
+                self.logger.warning(f"  ⚠️ {critical_count} critical issues found")
+            if warning_count > 0:
+                self.logger.info(f"  ℹ️ {warning_count} warnings")
+            
+            return report
+            
+        except Exception as e:
+            self.logger.error(f"❌ Quality analysis error: {e}")
+            return {
+                "success": False,
+                "overall_score": 0.0,
+                "error": str(e),
+                "issues": [],
+                "metrics": {}
+            }
+    
+    async def _check_loudness(self, audio: AudioSegment, target_config: Dict) -> Tuple[List[QualityIssue], Dict]:
+        """Проверка параметров громкости"""
+        issues = []
+        metrics = {}
+        
+        try:
+            # Базовые измерения
+            peak_db = audio.max_dBFS
+            rms = audio.rms
+            
+            # Приближенный LUFS (в реальности нужен pyloudnorm)
+            lufs_approx = 10 * np.log10(rms**2 / (32768**2)) - 0.691
+            lufs_approx = max(-70, lufs_approx)
+            
+            metrics.update({
+                "peak_db": peak_db,
+                "rms": rms,
+                "lufs_integrated": lufs_approx
+            })
+            
+            # Проверяем соответствие целям
+            target_lufs = target_config.get("target_lufs", -14)
+            target_peak = target_config.get("peak_ceiling", -1)
+            
+            # LUFS проверка
+            lufs_error = abs(lufs_approx - target_lufs)
+            if lufs_error > 2.0:
+                issues.append(QualityIssue(
+                    severity="critical",
+                    category="loudness",
+                    message=f"LUFS deviation too high: {lufs_approx:.1f} vs target {target_lufs:.1f}",
+                    value=lufs_approx,
+                    threshold=target_lufs,
+                    suggestion="Adjust overall level or mastering limiter settings"
+                ))
+            elif lufs_error > 1.0:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="loudness", 
+                    message=f"LUFS slightly off target: {lufs_approx:.1f} vs {target_lufs:.1f}",
+                    value=lufs_approx,
+                    threshold=target_lufs
+                ))
+            
+            # Peak проверка
+            if peak_db > target_peak:
+                issues.append(QualityIssue(
+                    severity="critical",
+                    category="loudness",
+                    message=f"Peak level too high: {peak_db:.1f}dB vs ceiling {target_peak:.1f}dB",
+                    value=peak_db,
+                    threshold=target_peak,
+                    suggestion="Apply peak limiting"
+                ))
+            
+            # Проверка на возможный клиппинг
+            if peak_db > -0.1:
+                issues.append(QualityIssue(
+                    severity="critical",
+                    category="loudness",
+                    message="Possible digital clipping detected",
+                    value=peak_db,
+                    suggestion="Reduce overall level to prevent clipping"
+                ))
+            
+        except Exception as e:
+            self.logger.error(f"Loudness check error: {e}")
+        
+        return issues, metrics
+    
+    async def _check_dynamics(self, audio: AudioSegment, target_config: Dict) -> Tuple[List[QualityIssue], Dict]:
+        """Проверка динамических характеристик"""
+        issues = []
+        metrics = {}
+        
+        try:
+            # Приближенный расчёт динамического диапазона
+            peak_db = audio.max_dBFS
+            rms_db = 20 * np.log10(audio.rms / 32768)
+            
+            dynamic_range = peak_db - rms_db
+            metrics["dynamic_range"] = dynamic_range
+            
+            # Целевой динамический диапазон
+            target_dr = target_config.get("dynamic_range", 8)
+            
+            if dynamic_range < target_dr - 3:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="dynamics",
+                    message=f"Low dynamic range: {dynamic_range:.1f}LU vs target {target_dr:.1f}LU",
+                    value=dynamic_range,
+                    threshold=target_dr,
+                    suggestion="Reduce compression or use parallel compression"
+                ))
+            elif dynamic_range > target_dr + 5:
+                issues.append(QualityIssue(
+                    severity="info",
+                    category="dynamics",
+                    message=f"High dynamic range: {dynamic_range:.1f}LU (may be good for some genres)",
+                    value=dynamic_range
+                ))
+            
+            # Проверка на чрезмерную компрессию
+            if dynamic_range < 4:
+                issues.append(QualityIssue(
+                    severity="critical",
+                    category="dynamics",
+                    message="Excessive compression detected - very low dynamic range",
+                    value=dynamic_range,
+                    suggestion="Reduce compression ratio or increase attack time"
+                ))
+            
+        except Exception as e:
+            self.logger.error(f"Dynamics check error: {e}")
+        
+        return issues, metrics
+    
+    async def _check_spectrum(self, audio: AudioSegment, target_config: Dict) -> Tuple[List[QualityIssue], Dict]:
+        """Проверка спектрального баланса"""
+        issues = []
+        metrics = {}
+        
+        try:
+            # Конвертируем в numpy для анализа
+            samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+            if audio.channels == 2:
+                samples = samples.reshape((-1, 2)).mean(axis=1)  # Моно
+            
+            sample_rate = audio.frame_rate
+            
+            # FFT анализ
+            fft = np.fft.rfft(samples)
+            freqs = np.fft.rfftfreq(len(samples), 1/sample_rate)
+            magnitude = np.abs(fft)
+            
+            # Частотные полосы
+            low_mask = freqs < 300
+            mid_mask = (freqs >= 300) & (freqs < 3000)
+            high_mask = freqs >= 3000
+            
+            total_energy = np.sum(magnitude**2)
+            low_energy = np.sum(magnitude[low_mask]**2) / total_energy
+            mid_energy = np.sum(magnitude[mid_mask]**2) / total_energy  
+            high_energy = np.sum(magnitude[high_mask]**2) / total_energy
+            
+            metrics.update({
+                "frequency_balance": {
+                    "low": float(low_energy),
+                    "mid": float(mid_energy),
+                    "high": float(high_energy)
+                },
+                "spectral_centroid": float(np.sum(freqs * magnitude) / np.sum(magnitude))
+            })
+            
+            # Проверяем баланс
+            if low_energy > 0.5:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="spectrum",
+                    message="Bass-heavy mix - may sound muddy on small speakers",
+                    value=low_energy,
+                    suggestion="Reduce low frequencies or apply high-pass filter"
+                ))
+            
+            if high_energy > 0.4:
+                issues.append(QualityIssue(
+                    severity="warning", 
+                    category="spectrum",
+                    message="Treble-heavy mix - may sound harsh",
+                    value=high_energy,
+                    suggestion="Reduce high frequencies with gentle EQ"
+                ))
+            
+            if low_energy < 0.15:
+                issues.append(QualityIssue(
+                    severity="info",
+                    category="spectrum", 
+                    message="Low bass content - check low-end presence",
+                    value=low_energy
+                ))
+            
+            # Проверка спектрального центроида
+            spectral_centroid = metrics["spectral_centroid"]
+            if spectral_centroid > 4000:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="spectrum",
+                    message="Very bright mix - spectral centroid high",
+                    value=spectral_centroid,
+                    suggestion="Consider gentle high-frequency roll-off"
+                ))
+            elif spectral_centroid < 1000:
+                issues.append(QualityIssue(
+                    severity="warning", 
+                    category="spectrum",
+                    message="Very dark mix - spectral centroid low",
+                    value=spectral_centroid,
+                    suggestion="Consider adding high-frequency content"
+                ))
+            
+        except Exception as e:
+            self.logger.error(f"Spectrum check error: {e}")
+        
+        return issues, metrics
+    
+    async def _check_stereo(self, audio: AudioSegment, target_config: Dict) -> Tuple[List[QualityIssue], Dict]:
+        """Проверка стерео характеристик"""
+        issues = []
+        metrics = {}
+        
+        try:
+            if audio.channels < 2:
+                issues.append(QualityIssue(
+                    severity="info",
+                    category="stereo",
+                    message="Mono audio - no stereo imaging",
+                    suggestion="Consider stereo enhancement if appropriate"
+                ))
+                metrics["stereo_width"] = 0.0
+                metrics["phase_correlation"] = 1.0
+                return issues, metrics
+            
+            # Стерео анализ
+            samples = np.array(audio.get_array_of_samples())
+            samples = samples.reshape((-1, 2))
+            
+            left = samples[:, 0]
+            right = samples[:, 1]
+            
+            # Корреляция между каналами
+            correlation = np.corrcoef(left, right)[0, 1]
+            if np.isnan(correlation):
+                correlation = 1.0
+            
+            # Стерео ширина
+            stereo_width = 1.0 - abs(correlation)
+            
+            metrics.update({
+                "phase_correlation": float(correlation),
+                "stereo_width": float(stereo_width)
+            })
+            
+            # Проверки
+            if correlation < -0.5:
+                issues.append(QualityIssue(
+                    severity="critical",
+                    category="stereo",
+                    message="Strong phase correlation issues - mono compatibility problems",
+                    value=correlation,
+                    suggestion="Check stereo processing and avoid excessive widening"
+                ))
+            elif correlation < 0.0:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="stereo",
+                    message="Some phase correlation issues detected",
+                    value=correlation
+                ))
+            
+            if stereo_width < 0.1:
+                issues.append(QualityIssue(
+                    severity="info", 
+                    category="stereo",
+                    message="Very narrow stereo image - consider stereo enhancement",
+                    value=stereo_width
+                ))
+            elif stereo_width > 0.9:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="stereo",
+                    message="Very wide stereo image - check mono compatibility",
+                    value=stereo_width,
+                    suggestion="Test mono playback compatibility"
+                ))
+            
+        except Exception as e:
+            self.logger.error(f"Stereo check error: {e}")
+        
+        return issues, metrics
+    
+    async def _check_artifacts(self, audio: AudioSegment) -> Tuple[List[QualityIssue], Dict]:
+        """Проверка на артефакты обработки"""
+        issues = []
+        metrics = {}
+        
+        try:
+            # Конвертируем в numpy
+            samples = np.array(audio.get_array_of_samples(), dtype=np.float32)
+            if audio.channels == 2:
+                samples = samples.reshape((-1, 2))
+                mono_samples = samples.mean(axis=1)
+            else:
+                mono_samples = samples
+            
+            sample_rate = audio.frame_rate
+            
+            # Нормализация
+            mono_samples = mono_samples / 32768.0
+            
+            # 1. Проверка на клиппинг
+            clipping_ratio = np.sum(np.abs(mono_samples) > 0.99) / len(mono_samples)
+            metrics["clipping_ratio"] = float(clipping_ratio)
+            
+            if clipping_ratio > 0.001:  # Более 0.1% клиппинга
+                issues.append(QualityIssue(
+                    severity="critical",
+                    category="artifacts",
+                    message=f"Digital clipping detected: {clipping_ratio*100:.2f}% of samples",
+                    value=clipping_ratio,
+                    suggestion="Reduce input level or apply proper limiting"
+                ))
+            elif clipping_ratio > 0.0001:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="artifacts", 
+                    message=f"Minor clipping detected: {clipping_ratio*100:.3f}% of samples",
+                    value=clipping_ratio
+                ))
+            
+            # 2. Проверка на DC offset
+            dc_offset = np.mean(mono_samples)
+            metrics["dc_offset"] = float(dc_offset)
+            
+            if abs(dc_offset) > 0.01:
+                issues.append(QualityIssue(
+                    severity="warning",
+                    category="artifacts",
+                    message=f"DC offset detected: {dc_offset:.3f}",
+                    value=abs(dc_offset),
+                    suggestion="Apply DC removal filter"
+                ))
+            
+            # 3. Проверка на тишину в начале/конце
+            window_size = int(0.1 * sample_rate)  # 100ms окна
+            
+            start_samples = mono_samples[:window_size]
+            end_samples = mono_samples[-window_size:]
+            
+            start_rms = np.sqrt(np.mean(start_samples**2))
+            end_rms = np.sqrt(np.mean(end_samples**2))
+            
+            metrics.update({
+                "start_silence_level": float(start_rms),
+                "end_silence_level": float(end_rms)
+            })
+            
+            silence_threshold = 0.001  # -60dB приблизительно
+            
+            if start_rms < silence_threshold:
+                issues.append(QualityIssue(
+                    severity="info",
+                    category="artifacts",
+                    message="Silent start detected - consider trimming",
+                    value=start_rms
+                ))
+            
+            if end_rms < silence_threshold:
+                issues.append(QualityIssue(
+                    severity="info", 
+                    category="artifacts",
+                    message="Silent end detected - consider trimming",
+                    value=end_rms
+                ))
+            
+            # 4. Проверка на чрезмерную компрессию (pumping)
+            # Анализируем изменения RMS по времени
+            if len(mono_samples) > sample_rate * 2:  # Минимум 2 секунды
+                chunk_size = int(0.1 * sample_rate)  # 100ms чанки
+                rms_history = []
+                
+                for i in range(0, len(mono_samples) - chunk_size, chunk_size):
+                    chunk = mono_samples[i:i+chunk_size]
+                    chunk_rms = np.sqrt(np.mean(chunk**2))
+                    rms_history.append(chunk_rms)
+                
+                if len(rms_history) > 10:
+                    rms_variation = np.std(rms_history)
+                    metrics["rms_variation"] = float(rms_variation)
+                    
+                    # Если RMS очень стабильная, может быть признак чрезмерной компрессии
+                    if rms_variation < 0.01:
+                        issues.append(QualityIssue(
+                            severity="warning",
+                            category="artifacts",
+                            message="Very stable RMS - possible over-compression",
+                            value=rms_variation,
+                            suggestion="Check compression settings and dynamics"
+                        ))
+            
+            # 5. Простая проверка на интермодуляционные искажения
+            # Ищем неожиданные гармоники
+            try:
+                fft = np.fft.rfft(mono_samples)
+                magnitude = np.abs(fft)
+                
+                # Находим пики
+                from scipy.signal import find_peaks
+                peaks, _ = find_peaks(magnitude, height=np.max(magnitude) * 0.1)
+                
+                metrics["spectral_peaks_count"] = len(peaks)
+                
+                # Если очень много пиков, может быть признак искажений
+                if len(peaks) > len(mono_samples) // 1000:  # Эмпирический порог
+                    issues.append(QualityIssue(
+                        severity="warning",
+                        category="artifacts",
+                        message="High number of spectral peaks - possible distortion",
+                        value=len(peaks),
+                        suggestion="Check for over-processing or distortion"
+                    ))
+                    
+            except ImportError:
+                # scipy недоступна, пропускаем эту проверку
+                pass
+            
+        except Exception as e:
+            self.logger.error(f"Artifacts check error: {e}")
+        
+        return issues, metrics
+    
+    def _compile_quality_report(self, issues: List[QualityIssue], metrics: Dict, target_config: Dict) -> Dict:
+        """Компиляция итогового отчёта о качестве"""
+        
+        # Подсчитываем проблемы по серьёзности
+        critical_issues = [i for i in issues if i.severity == "critical"]
+        warning_issues = [i for i in issues if i.severity == "warning"] 
+        info_issues = [i for i in issues if i.severity == "info"]
+        
+        # Расчёт общего скора (0.0 - 1.0)
+        base_score = 1.0
+        
+        # Штрафы за проблемы
+        base_score -= len(critical_issues) * 0.2  # Критические проблемы -20%
+        base_score -= len(warning_issues) * 0.05   # Предупреждения -5%
+        base_score -= len(info_issues) * 0.01      # Информация -1%
+        
+        overall_score = max(0.0, base_score)
+        
+        # Определяем общий статус
+        if len(critical_issues) > 0:
+            status = "critical_issues"
+            recommendation = "Critical issues found - manual review required"
+        elif len(warning_issues) > 0:
+            status = "warnings"
+            recommendation = "Some issues detected - review recommended"
+        elif len(info_issues) > 0:
+            status = "minor_issues"
+            recommendation = "Minor issues noted - track acceptable"
+        else:
+            status = "excellent"
+            recommendation = "No issues detected - excellent quality"
+        
+        # Создаём отчёт
+        report = {
+            "success": True,
+            "overall_score": overall_score,
+            "status": status,
+            "recommendation": recommendation,
+            "summary": {
+                "critical_issues": len(critical_issues),
+                "warnings": len(warning_issues), 
+                "info_issues": len(info_issues),
+                "total_issues": len(issues)
+            },
+            "issues": [
+                {
+                    "severity": issue.severity,
+                    "category": issue.category,
+                    "message": issue.message,
+                    "value": issue.value,
+                    "threshold": issue.threshold,
+                    "suggestion": issue.suggestion
+                }
+                for issue in issues
+            ],
+            "metrics": metrics,
+            "target_config": target_config,
+            "analysis_timestamp": None,  # В реальности - текущее время
+            "compliance": self._check_standards_compliance(metrics, target_config)
+        }
+        
+        return report
+    
+    def _check_standards_compliance(self, metrics: Dict, target_config: Dict) -> Dict:
+        """Проверка соответствия различным стандартам"""
+        compliance = {}
+        
+        current_lufs = metrics.get("lufs_integrated", -14)
+        current_peak = metrics.get("peak_db", -1)
+        current_dr = metrics.get("dynamic_range", 8)
+        
+        for standard_name, standard in self.standards.items():
+            lufs_range = standard["lufs_range"]
+            peak_max = standard["peak_max"]
+            dr_min = standard["dr_min"]
+            
+            # Проверяем соответствие
+            lufs_ok = lufs_range[0] <= current_lufs <= lufs_range[1]
+            peak_ok = current_peak <= peak_max
+            dr_ok = current_dr >= dr_min
+            
+            compliance[standard_name] = {
+                "overall": lufs_ok and peak_ok and dr_ok,
+                "loudness": lufs_ok,
+                "peaks": peak_ok,
+                "dynamics": dr_ok,
+                "details": {
+                    "lufs_target": lufs_range,
+                    "lufs_actual": current_lufs,
+                    "peak_max": peak_max,
+                    "peak_actual": current_peak,
+                    "dr_min": dr_min,
+                    "dr_actual": current_dr
+                }
+            }
+        
+        return compliance
+    
+    def generate_markdown_report(self, report: Dict, output_path: str) -> bool:
+        """Генерация подробного отчёта в формате Markdown"""
+        try:
+            with open(output_path, 'w', encoding='utf-8') as f:
+                f.write("# 🔍 WaveDream Quality Analysis Report\n\n")
+                
+                # Общая информация
+                f.write(f"## 📊 Overall Assessment\n\n")
+                f.write(f"- **Quality Score**: {report['overall_score']:.2f}/1.0\n")
+                f.write(f"- **Status**: {report['status'].replace('_', ' ').title()}\n")
+                f.write(f"- **Recommendation**: {report['recommendation']}\n\n")
+                
+                # Сводка проблем
+                summary = report['summary']
+                f.write(f"## 🚨 Issues Summary\n\n")
+                f.write(f"- **Critical Issues**: {summary['critical_issues']}\n")
+                f.write(f"- **Warnings**: {summary['warnings']}\n")
+                f.write(f"- **Info Items**: {summary['info_issues']}\n")
+                f.write(f"- **Total Issues**: {summary['total_issues']}\n\n")
+                
+                # Детальные проблемы
+                if report['issues']:
+                    f.write(f"## 📋 Detailed Issues\n\n")
+                    
+                    for issue in report['issues']:
+                        severity_emoji = {
+                            "critical": "🔴",
+                            "warning": "🟡", 
+                            "info": "ℹ️"
+                        }
+                        emoji = severity_emoji.get(issue['severity'], "❓")
+                        
+                        f.write(f"### {emoji} {issue['category'].title()} - {issue['severity'].title()}\n\n")
+                        f.write(f"**Message**: {issue['message']}\n\n")
+                        
+                        if issue['value'] is not None:
+                            f.write(f"**Current Value**: {issue['value']:.3f}\n\n")
+                        
+                        if issue['threshold'] is not None:
+                            f.write(f"**Target/Threshold**: {issue['threshold']:.3f}\n\n")
+                        
+                        if issue['suggestion']:
+                            f.write(f"**Suggestion**: {issue['suggestion']}\n\n")
+                        
+                        f.write("---\n\n")
+                
+                # Технические метрики
+                f.write(f"## 📈 Technical Metrics\n\n")
+                metrics = report['metrics']
+                
+                f.write(f"### Loudness Analysis\n")
+                f.write(f"- **Integrated LUFS**: {metrics.get('lufs_integrated', 'N/A'):.1f}\n")
+                f.write(f"- **Peak Level**: {metrics.get('peak_db', 'N/A'):.1f} dB\n")
+                f.write(f"- **Dynamic Range**: {metrics.get('dynamic_range', 'N/A'):.1f} LU\n\n")
+                
+                if 'frequency_balance' in metrics:
+                    balance = metrics['frequency_balance']
+                    f.write(f"### Frequency Balance\n")
+                    f.write(f"- **Low (0-300Hz)**: {balance['low']*100:.1f}%\n")
+                    f.write(f"- **Mid (300Hz-3kHz)**: {balance['mid']*100:.1f}%\n") 
+                    f.write(f"- **High (3kHz+)**: {balance['high']*100:.1f}%\n\n")
+                
+                if 'stereo_width' in metrics:
+                    f.write(f"### Stereo Analysis\n")
+                    f.write(f"- **Stereo Width**: {metrics['stereo_width']:.2f}\n")
+                    f.write(f"- **Phase Correlation**: {metrics.get('phase_correlation', 'N/A'):.2f}\n\n")
+                
+                # Соответствие стандартам
+                if 'compliance' in report:
+                    f.write(f"## 📋 Standards Compliance\n\n")
+                    
+                    for standard, compliance in report['compliance'].items():
+                        status = "✅ PASS" if compliance['overall'] else "❌ FAIL"
+                        f.write(f"### {standard.upper()} {status}\n\n")
+                        
+                        details = compliance['details']
+                        f.write(f"- **Loudness**: {details['lufs_actual']:.1f} LUFS (target: {details['lufs_target'][0]} to {details['lufs_target'][1]})\n")
+                        f.write(f"- **Peak**: {details['peak_actual']:.1f} dB (max: {details['peak_max']})\n")
+                        f.write(f"- **Dynamics**: {details['dr_actual']:.1f} LU (min: {details['dr_min']})\n\n")
+                
+                # Рекомендации
+                f.write(f"## 💡 Recommendations\n\n")
+                
+                if summary['critical_issues'] > 0:
+                    f.write("### Critical Actions Required\n")
+                    f.write("- Review and fix all critical issues before release\n")
+                    f.write("- Consider re-mastering if multiple critical issues exist\n\n")
+                
+                if summary['warnings'] > 0:
+                    f.write("### Suggested Improvements\n")
+                    f.write("- Address warning issues for optimal quality\n") 
+                    f.write("- Test on various playback systems\n\n")
+                
+                f.write("### General Recommendations\n")
+                f.write("- A/B test with reference tracks\n")
+                f.write("- Check mono compatibility\n")
+                f.write("- Test on different speakers/headphones\n")
+                f.write("- Consider loudness normalization on target platforms\n\n")
+                
+                f.write("---\n")
+                f.write("*Report generated by WaveDream Enhanced Pro Quality Analyzer*\n")
+            
+            self.logger.info(f"📋 Quality report saved: {output_path}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error generating markdown report: {e}")
+            return False
+
+# self_check.py:
+import os
+import logging
+from pydub import AudioSegment
+import numpy as np
+import librosa
+
+VALIDATION_CONFIG = {
+    "min_duration_sec": 10.0,
+    "silence_threshold_db": -40.0,
+    "max_silent_ratio": 0.5,
+    "peak_db_limit": -0.1
+}
+
+def check_rms(audio: AudioSegment) -> float:
+    samples = np.array(audio.get_array_of_samples())
+    return np.sqrt(np.mean(samples**2))
+
+def is_too_silent(audio: AudioSegment, threshold_db: float = None) -> bool:
+    threshold_db = threshold_db or VALIDATION_CONFIG["silence_threshold_db"]
+    rms_db = audio.dBFS
+    logging.info(f"🔍 RMS dBFS: {rms_db:.2f}")
+    return rms_db < threshold_db
+
+def has_enough_duration(audio: AudioSegment, min_duration_sec: float = None) -> bool:
+    min_duration_sec = min_duration_sec or VALIDATION_CONFIG["min_duration_sec"]
+    return len(audio) >= min_duration_sec * 1000
+
+def is_mostly_silence(path, threshold_db=None, max_silent_ratio=None) -> bool:
+    threshold_db = threshold_db or VALIDATION_CONFIG["silence_threshold_db"]
+    max_silent_ratio = max_silent_ratio or VALIDATION_CONFIG["max_silent_ratio"]
+    try:
+        y, sr = librosa.load(path, sr=None)
+        S = librosa.feature.rms(y=y)[0]
+        silence = S < librosa.db_to_amplitude(threshold_db)
+        silent_ratio = np.mean(silence)
+        logging.info(f"🔍 Silent frames: {silent_ratio * 100:.1f}%")
+        return silent_ratio > max_silent_ratio
+    except Exception as e:
+        logging.warning(f"⚠️ Ошибка анализа тишины: {e}")
+        return False
+
+def has_peak_clipping(path, peak_limit_db=None) -> bool:
+    peak_limit_db = peak_limit_db or VALIDATION_CONFIG["peak_db_limit"]
+    try:
+        y, sr = librosa.load(path, sr=None)
+        peak_db = librosa.amplitude_to_db(np.max(np.abs(y)))
+        logging.info(f"🔍 Peak level dB: {peak_db:.2f}")
+        return peak_db >= peak_limit_db
+    except Exception as e:
+        logging.warning(f"⚠️ Ошибка анализа пиков: {e}")
+        return False
+
+def verify_mix(path: str) -> dict:
+    logging.info(f"🔍 Проверка финального микса: {path}")
+
+    if not os.path.exists(path):
+        return {"ok": False, "reason": "no_file"}
+
+    try:
+        audio = AudioSegment.from_file(path)
+    except Exception as e:
+        logging.error(f"❌ Ошибка загрузки: {e}")
+        return {"ok": False, "reason": "load_fail"}
+
+    if not has_enough_duration(audio):
+        return {"ok": False, "reason": "too_short"}
+
+    if is_too_silent(audio):
+        return {"ok": False, "reason": "too_silent"}
+
+    if is_mostly_silence(path):
+        return {"ok": False, "reason": "mostly_silent"}
+
+    if has_peak_clipping(path):
+        return {"ok": False, "reason": "peak_clipping"}
+
+    return {"ok": True}
