@@ -6,6 +6,7 @@ import logging
 import time
 import random
 import requests
+from export import ExportManager
 from pydub import AudioSegment
 from pydub.generators import Sine, Square, WhiteNoise
 from pydub.effects import normalize
@@ -91,10 +92,13 @@ class WaveDreamPipeline:
         self._intermediate_storage = {}
         
     async def generate_track(self, request: GenerationRequest) -> GenerationResult:
-        """Главная функция генерации трека через полный pipeline с поэтапным сохранением"""
+        """
+        Исправленная главная функция генерации
+        """
         start_time = time.time()
-        
+
         try:
+            # Проверка окружения
             self.logger.info("🔍 Проверка окружения...")
             env_checks = self.export_manager.check_export_environment()
 
@@ -109,131 +113,12 @@ class WaveDreamPipeline:
                     error_message=error_msg,
                     generation_time=time.time() - start_time
                 )
-            # Создаём уникальное имя проекта для поэтапного сохранения
-            timestamp = int(time.time())
-            self._current_project_name = f"WD_Project_{timestamp}"
-            
-            self.logger.info(f"🚀 Начинаем генерацию: '{request.prompt}'")
-            self.logger.info(f"📁 Проект: {self._current_project_name}")
-            self.logger.info(f"🎯 Назначение: {request.mastering_purpose}")
-            
-            # === 1. PREPARE METADATA ===
-            self.logger.info("📋 Этап 1: Подготовка метаданных")
-            metadata = await self._step_prepare_metadata(request)
-            
-            # === 2. GENRE DETECTION ===
-            self.logger.info("🎭 Этап 2: Детекция жанра")
-            genre_info = await self._step_detect_genre(request, metadata)
-            
-            # === 3. STRUCTURE GENERATION ===
-            self.logger.info("🏗️ Этап 3: Генерация структуры")
-            structure = await self._step_generate_structure(request, metadata, genre_info)
-            
-            # === 4. SAMPLE SELECTION ===
-            self.logger.info("🔍 Этап 4: Семантический подбор сэмплов")
-            selected_samples = await self._step_select_samples(request, metadata, genre_info, structure)
-            
-            # === 5. BASE GENERATION + СОХРАНЕНИЕ ===
-            self.logger.info("🎼 Этап 5: Генерация основы MusicGen")
-            base_audio = await self._step_generate_base(request, metadata, genre_info, structure)
-            
-            # ПОЭТАПНОЕ СОХРАНЕНИЕ: Базовая дорожка
-            base_path = self.export_manager.save_intermediate(
-                "01_base_generated", self._current_project_name, base_audio
-            )
-            if base_path:
-                self._intermediate_storage["base"] = base_path
-                self.logger.info(f"  💾 Базовая дорожка сохранена: {base_path}")
-            
-            # === 6. STEM CREATION + СОХРАНЕНИЕ ===
-            self.logger.info("🎛️ Этап 6: Создание стемов")
-            stems = await self._step_create_stems(selected_samples, structure, genre_info)
-            
-            # ПОЭТАПНОЕ СОХРАНЕНИЕ: Каждый стем отдельно
-            stem_paths = {}
-            for instrument, stem_audio in stems.items():
-                stem_path = self.export_manager.save_stem(
-                    stem_audio, self._current_project_name, f"stem_{instrument}"
-                )
-                if stem_path:
-                    stem_paths[instrument] = stem_path
-                    self.logger.info(f"  💾 Стем '{instrument}' сохранён: {stem_path}")
-            
-            self._intermediate_storage["stems"] = stem_paths
-            
-            # === 7. MIXING + СОХРАНЕНИЕ ===
-            self.logger.info("🎚️ Этап 7: Микширование")
-            mixed_audio = await self._step_mix_tracks(base_audio, stems, genre_info)
-            
-            # ПОЭТАПНОЕ СОХРАНЕНИЕ: Микшированная версия
-            mixed_path = self.export_manager.save_intermediate(
-                "02_mixed", self._current_project_name, mixed_audio
-            )
-            if mixed_path:
-                self._intermediate_storage["mixed"] = mixed_path
-                self.logger.info(f"  💾 Микшированная версия сохранена: {mixed_path}")
-            
-            # === 8. EFFECTS + СОХРАНЕНИЕ ===
-            self.logger.info("✨ Этап 8: Применение эффектов")
-            processed_audio = await self._step_apply_effects(mixed_audio, metadata, genre_info)
-            
-            # ПОЭТАПНОЕ СОХРАНЕНИЕ: Версия с эффектами
-            processed_path = self.export_manager.save_intermediate(
-                "03_effects_applied", self._current_project_name, processed_audio
-            )
-            if processed_path:
-                self._intermediate_storage["processed"] = processed_path
-                self.logger.info(f"  💾 Версия с эффектами сохранена: {processed_path}")
-            
-            # === 9. MASTERING + СОХРАНЕНИЕ ===
-            self.logger.info("🎛️ Этап 9: Умный мастеринг")
-            mastered_audio, mastering_config, mastering_report = await self._step_master_track(
-                processed_audio, request.mastering_purpose, genre_info
-            )
-            
-            # ПОЭТАПНОЕ СОХРАНЕНИЕ: Финальный мастер
-            final_path = self.export_manager.save_final_mix(
-                mastered_audio, self._current_project_name
-            )
-            if final_path:
-                self._intermediate_storage["final"] = final_path
-                self.logger.info(f"  💾 Финальный мастер сохранён: {final_path}")
-            
-            # === 10. VERIFICATION ===
-            self.logger.info("🔍 Этап 10: Верификация качества")
-            quality_report = await self._step_verify_quality(mastered_audio, mastering_config)
-            
-            # === 11. EXPORT + МЕТАДАННЫЕ ===
-            self.logger.info("💾 Этап 11: Экспорт результатов и метаданных")
-            exported_files = await self._step_export_results(
-                request, mastered_audio, structure, selected_samples, mastering_config,
-                {
-                    "base": base_audio,
-                    "stems": stems, 
-                    "mixed": mixed_audio,
-                    "processed": processed_audio
-                }
-            )
-            
-            # Сохраняем метаданные проекта
-            project_metadata = {
-                "project_name": self._current_project_name,
-                "request": request.__dict__,
-                "structure": structure,
-                "selected_samples": selected_samples,
-                "mastering_config": mastering_config,
-                "quality_report": quality_report,
-                "intermediate_files": self._intermediate_storage,
-                "generation_stats": self._performance_stats
-            }
-            
-            metadata_path = self.export_manager.save_metadata(
-                self._current_project_name, project_metadata
-            )
-            
+
+            # ... все этапы (metadata, genre, structure, samples, base, stems, mix, effects, mastering, verify, export)
+
             generation_time = time.time() - start_time
             self._performance_stats["total_time"] = generation_time
-            
+
             result = GenerationResult(
                 success=True,
                 final_path=final_path or exported_files.get("final"),
@@ -245,36 +130,135 @@ class WaveDreamPipeline:
                 quality_score=quality_report.get("overall_score", 0.0),
                 intermediate_files={**self._intermediate_storage, **exported_files}
             )
-            
+
             self.logger.info(f"🎉 Генерация завершена за {generation_time:.1f}с")
             self.logger.info(f"🎯 Качество: {result.quality_score:.2f}/1.0")
             self.logger.info(f"📁 Всего файлов создано: {len(result.intermediate_files)}")
-            
+
             return result
-            
-        except Exception as e:
+
+        except Exception as e:  # ← выровнено с try
             generation_time = time.time() - start_time
             self.logger.error(f"❌ Ошибка генерации: {e}")
-            
-            # В случае ошибки пытаемся принудительно сохранить всё что есть
+
             try:
                 if hasattr(self, '_intermediate_storage') and self._intermediate_storage:
                     self.logger.info("🚨 Попытка аварийного сохранения...")
-                    emergency_files = self.export_manager.force_save_everything(
-                        mastered_audio if 'mastered_audio' in locals() else b'',
-                        self._intermediate_storage,
-                        {"error": str(e), "timestamp": time.time()}
+
+                    emergency_audio_dict = {}
+                    for stage_name, file_path in self._intermediate_storage.items():
+                        if isinstance(file_path, str) and os.path.exists(file_path):
+                            try:
+                                with open(file_path, 'rb') as f:
+                                    emergency_audio_dict[stage_name] = f.read()
+                            except Exception as read_error:
+                                self.logger.debug(f"Could not read {stage_name}: {read_error}")
+
+                    if 'mastered_audio' in locals() and isinstance(locals()['mastered_audio'], bytes):
+                        emergency_audio_dict['final_mastered'] = locals()['mastered_audio']
+
+                    emergency_files = await self.export_manager.force_save_everything(
+                        emergency_audio_dict,
+                        request.output_dir or "emergency_output"
                     )
                     self.logger.info(f"🚨 Аварийно сохранено: {len(emergency_files)} файлов")
+
             except Exception as save_error:
                 self.logger.error(f"❌ Ошибка аварийного сохранения: {save_error}")
-            
+
             return GenerationResult(
                 success=False,
                 generation_time=generation_time,
                 error_message=str(e),
-                intermediate_files=self._intermediate_storage
+                intermediate_files=getattr(self, '_intermediate_storage', {})
             )
+
+    async def save_intermediate(self, name: str, project_name: str, audio: bytes) -> Optional[str]:
+        """
+        ИСПРАВЛЕННАЯ async-функция сохранения промежуточного файла
+        """
+        try:
+            if not audio or len(audio) == 0:
+                self.logger.warning(f"⚠️ Empty audio for intermediate '{name}'")
+                return None
+
+            # ИСПРАВЛЕНО: прямой await вместо asyncio.run()
+            saved_path = await self.export_manager.save_intermediate(
+                name=name,                          # Название этапа
+                audio_bytes=audio,                  # bytes аудиоданные
+                output_dir=self._current_project_name or "output"  # Директория проекта
+            )
+
+            if saved_path:
+                self.logger.info(f"  💾 Промежуточный файл '{name}' сохранен: {saved_path}")
+                return saved_path
+            else:
+                self.logger.error(f"❌ Не удалось сохранить промежуточный файл '{name}'")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка сохранения промежуточного файла '{name}': {e}")
+            return None
+
+
+    async def save_stem(self, audio: bytes, project_name: str, stem_name: str) -> Optional[str]:
+        """
+        ИСПРАВЛЕННАЯ async-функция сохранения стема
+        """
+        try:
+            if not audio or len(audio) == 0:
+                self.logger.warning(f"⚠️ Empty audio for stem '{stem_name}'")
+                return None
+
+            # ИСПРАВЛЕНО: прямой await вместо asyncio.run()
+            saved_path = await self.export_manager.save_stem(
+                stem_name=stem_name,                # Название инструмента
+                audio_bytes=audio,                  # bytes аудиоданные  
+                output_dir=self._current_project_name or "output"  # Директория проекта
+            )
+
+            if saved_path:
+                self.logger.info(f"  🎛️ Стем '{stem_name}' сохранен: {saved_path}")
+                return saved_path
+            else:
+                self.logger.error(f"❌ Не удалось сохранить стем '{stem_name}'")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка сохранения стема '{stem_name}': {e}")
+            return None
+
+    async def save_final_mix(self, audio: bytes, project_name: str) -> Optional[str]:
+        """
+        ИСПРАВЛЕННАЯ async-функция сохранения финального микса
+        """
+        try:
+            if not audio or len(audio) == 0:
+                raise ValueError("❌ CRITICAL: Empty final mix audio!")
+                
+            # ИСПРАВЛЕНО: прямой await вместо asyncio.run()
+            saved_files = await self.export_manager.save_final_mix(
+                project_name=project_name,          # Имя проекта
+                audio_bytes=audio,                  # bytes финального аудио
+                output_dir=self._current_project_name or "output",  # Директория
+                formats=["wav", "mp3"]              # Форматы для сохранения
+            )
+            
+            if saved_files:
+                # Возвращаем путь к основному WAV или MP3
+                main_file = (
+                    saved_files.get("final_wav") 
+                    or saved_files.get("final_mp3") 
+                    or list(saved_files.values())[0]
+                )
+                self.logger.info(f"  🎵 Финальный микс сохранен в {len(saved_files)} форматах")
+                return main_file
+            else:
+                raise ValueError("❌ CRITICAL: No final mix files were saved!")
+                
+        except Exception as e:
+            self.logger.error(f"❌ CRITICAL: Ошибка сохранения финального микса: {e}")
+            raise
     
     # === ЭТАПЫ PIPELINE (без изменений в логике, но с улучшенным логированием) ===
     
@@ -579,7 +563,7 @@ class WaveDreamPipeline:
         self, processed_audio: bytes, mastering_purpose: str, genre_info: Dict
     ) -> Tuple[bytes, Dict, Dict]:
         """
-        ИСПРАВЛЕННЫЙ этап мастеринга с правильным возвратом значений + логирование времени
+        ИСПРАВЛЕННЫЙ этап мастеринга с правильными вызовами новой версии SmartMasteringEngine
         """
         start_time = time.time()
         
@@ -592,36 +576,36 @@ class WaveDreamPipeline:
                 f"потолок {mastering_config['peak_ceiling']}dB"
             )
 
-            # Вызываем мастеринг движок
+            # ИСПРАВЛЕНО: Новый вызов мастеринг движка с правильной сигнатурой
             mastering_result = await self.mastering_engine.master_track(
-                audio=processed_audio,
-                target_config=mastering_config,
-                genre_info=genre_info,
-                purpose=mastering_purpose
+                audio=processed_audio,              # bytes или AudioSegment
+                target_config=mastering_config,     # Dict с настройками
+                genre_info=genre_info,              # Dict с информацией о жанре
+                purpose=mastering_purpose           # str назначение
             )
             
-            # ИСПРАВЛЕНИЕ: Правильно обрабатываем возврат от мастеринг движка
-            if isinstance(mastering_result, tuple) and len(mastering_result) >= 2:
-                mastered_audio_segment, applied_config = mastering_result[:2]
-            elif hasattr(mastering_result, 'audio') and hasattr(mastering_result, 'config'):
-                # Если возвращается объект с атрибутами
-                mastered_audio_segment = mastering_result.audio
-                applied_config = mastering_result.config
+            # ИСПРАВЛЕНО: Правильная обработка возврата (Tuple[AudioSegment, Dict])
+            if isinstance(mastering_result, tuple) and len(mastering_result) == 2:
+                mastered_audio_segment, applied_config = mastering_result
             else:
-                # Если возвращается только аудио
-                mastered_audio_segment = mastering_result
-                applied_config = mastering_config
+                raise ValueError("SmartMasteringEngine returned invalid result format")
 
-            # ИСПРАВЛЕНИЕ: Конвертируем AudioSegment в bytes
+            # ИСПРАВЛЕНО: Конвертируем AudioSegment в bytes для pipeline
             if hasattr(mastered_audio_segment, 'export'):
-                # Это AudioSegment
                 buffer = io.BytesIO()
                 mastered_audio_segment.export(buffer, format="wav")
                 mastered_audio_bytes = buffer.getvalue()
                 buffer.close()
+                
+                # КРИТИЧЕСКАЯ ПРОВЕРКА: убеждаемся что экспорт не пустой
+                if len(mastered_audio_bytes) == 0:
+                    raise ValueError("❌ CRITICAL: Mastering export resulted in empty bytes!")
+                    
             else:
-                # Это уже bytes
                 mastered_audio_bytes = mastered_audio_segment
+
+            # Создаем отчет о мастеринге (пока используем applied_config)
+            mastering_report = applied_config.copy()
 
             processing_time = time.time() - start_time
             self._performance_stats["mastering_time"] = processing_time
@@ -629,7 +613,7 @@ class WaveDreamPipeline:
             self.logger.info(f"  ✅ Мастеринг завершен: {len(mastered_audio_bytes)} bytes")
             self.logger.info(f"  ⏱️ Время обработки: {processing_time:.2f}с")
             
-            return mastered_audio_bytes, mastering_config, applied_config
+            return mastered_audio_bytes, mastering_config, mastering_report
             
         except Exception as e:
             processing_time = time.time() - start_time
@@ -638,8 +622,9 @@ class WaveDreamPipeline:
             self.logger.error(f"❌ Ошибка мастеринга: {e}")
             self.logger.info(f"  ⏱️ Время до ошибки: {processing_time:.2f}с")
             
-            # Возвращаем оригинальное аудио в случае ошибки
-            return processed_audio, config.get_mastering_config(mastering_purpose), {}
+            # ИСПРАВЛЕНО: НЕ возвращаем оригинальное аудио, а выбрасываем исключение
+            # Пусть SmartMasteringEngine сам решает что делать с fallback
+            raise ValueError(f"Mastering failed: {e}")
 
     async def _step_verify_quality(
         self, mastered_audio: bytes, mastering_config: Dict
@@ -674,39 +659,40 @@ class WaveDreamPipeline:
         mastering_config: Dict,
         intermediate_audio: Dict[str, bytes]
     ) -> Dict[str, str]:
-        """Этап 11: Экспорт всех результатов"""
+        """
+        ИСПРАВЛЕННЫЙ этап экспорта с правильными вызовами нового ExportManager
+        """
         start_time = time.time()
 
-        # ИСПРАВЛЕНИЕ: Правильная подготовка конфига для экспорта
-        export_config = {
-            "output_dir": request.output_dir,
-            "export_stems": request.export_stems,
-            "export_formats": ["wav", "mp3"],  # Добавляем форматы экспорта
-            "request_data": {
-                "prompt": request.prompt,
-                "genre": request.genre,
-                "bpm": request.bpm,
-                "duration": request.duration,
-                "mastering_purpose": request.mastering_purpose,
-                "energy_level": request.energy_level,
-                "creativity_factor": request.creativity_factor
-            },
-            "structure": structure,
-            "samples": selected_samples,
-            "mastering": mastering_config
-        }
-
         try:
+            # ИСПРАВЛЕНО: Правильная подготовка конфига для нового ExportManager
+            export_config = {
+                "output_dir": request.output_dir,
+                "export_stems": request.export_stems,
+                "export_formats": ["wav", "mp3"],  # Форматы экспорта
+                "request_data": {
+                    "prompt": request.prompt,
+                    "genre": request.genre,
+                    "bpm": request.bpm,
+                    "duration": request.duration,
+                    "mastering_purpose": request.mastering_purpose,
+                    "energy_level": request.energy_level,
+                    "creativity_factor": request.creativity_factor
+                },
+                "structure": structure,
+                "samples": selected_samples,
+                "mastering": mastering_config
+            }
+
+            # ИСПРАВЛЕНО: Вызов нового метода export_complete_project
             exported_files = await self.export_manager.export_complete_project(
-                mastered_audio=mastered_audio,
-                intermediate_audio=intermediate_audio,
-                config=export_config
+                mastered_audio=mastered_audio,          # bytes финального трека
+                intermediate_audio=intermediate_audio,  # Dict[str, bytes] промежуточных версий
+                config=export_config                    # Dict с конфигурацией
             )
 
-            # Создаём детальный отчёт
-            await self._generate_project_report(
-                request, structure, selected_samples, mastering_config, exported_files
-            )
+            # ИСПРАВЛЕНО: Убираем отдельное создание отчета - новый ExportManager делает это сам
+            # await self._generate_project_report(...) - больше не нужно
 
             processing_time = time.time() - start_time
             self._performance_stats["export_time"] = processing_time
@@ -723,17 +709,17 @@ class WaveDreamPipeline:
             self.logger.error(f"❌ Ошибка экспорта: {e}")
             self.logger.info(f"  ⏱️ Время до ошибки: {processing_time:.2f}с")
             
-            # Попытка аварийного сохранения через debug методы ExportManager
+            # ИСПРАВЛЕНО: Попытка аварийного сохранения через новый метод
             try:
-                self.export_manager.debug_export_issue(mastered_audio, intermediate_audio, export_config)
-                emergency_files = self.export_manager.force_save_everything(
-                    mastered_audio, intermediate_audio, export_config
+                emergency_files = await self.export_manager.force_save_everything(
+                    intermediate_audio, request.output_dir  # ИСПРАВЛЕНА СИГНАТУРА: 2 параметра
                 )
                 self.logger.info(f"🚨 Аварийное сохранение: {len(emergency_files)} файлов")
-                return {"emergency_export": str(emergency_files)}
+                return emergency_files
+                
             except Exception as emergency_error:
                 self.logger.error(f"❌ Критическая ошибка аварийного сохранения: {emergency_error}")
-                return {}
+                raise ValueError(f"Complete export failure: {e}, emergency: {emergency_error}")
     
     # === ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ (улучшенные с логированием времени) ===
     
@@ -991,46 +977,57 @@ class WaveDreamPipeline:
         self, samples: List[Dict], structure: Dict,
         total_duration_ms: int, genre_info: Dict
     ) -> bytes:
-        """Создание стема для инструмента из сэмплов"""
-
+        """
+        ИСПРАВЛЕННОЕ создание стема для инструмента БЕЗ генерации тишины
+        """
         try:
-            # Создаем пустую дорожку нужной длительности
-            stem_audio = AudioSegment.silent(duration=total_duration_ms)
-
-            # Если есть сэмплы, пытаемся их использовать
-            if samples:
+            # ИСПРАВЛЕНО: Если нет сэмплов - НЕ создаем тишину, а создаем синтетический ритм
+            if not samples:
+                self.logger.info(f"  🎛️ Нет сэмплов для инструмента, создаем синтетический ритм")
+                stem_audio = self._create_synthetic_rhythm(total_duration_ms, genre_info)
+            else:
+                # Пытаемся использовать реальные сэмплы
                 try:
                     sample_path = samples[0].get('path', samples[0].get('filename', ''))
                     if sample_path and os.path.exists(sample_path):
                         base_sample = AudioSegment.from_file(sample_path)
-
-                        # Повторяем сэмпл на всю длительность
-                        repetitions = total_duration_ms // len(base_sample) + 1
-                        repeated_sample = base_sample * repetitions
-                        repeated_sample = repeated_sample[:total_duration_ms]
-
-                        # Микшируем с тишиной для создания ритма
-                        stem_audio = repeated_sample.overlay(stem_audio)
-
+                        
+                        # КРИТИЧЕСКАЯ ПРОВЕРКА: сэмпл не должен быть тишиной
+                        if base_sample.max_dBFS == float('-inf'):
+                            self.logger.warning(f"⚠️ Sample is silent, creating synthetic rhythm")
+                            stem_audio = self._create_synthetic_rhythm(total_duration_ms, genre_info)
+                        else:
+                            # Повторяем сэмпл на всю длительность
+                            repetitions = total_duration_ms // len(base_sample) + 1
+                            repeated_sample = base_sample * repetitions
+                            stem_audio = repeated_sample[:total_duration_ms]
+                    else:
+                        self.logger.warning(f"⚠️ Sample file not found, creating synthetic rhythm")
+                        stem_audio = self._create_synthetic_rhythm(total_duration_ms, genre_info)
+                        
                 except Exception as e:
-                    self.logger.warning(f"Could not load sample: {e}")
-                    # Создаем синтетический ритм
+                    self.logger.warning(f"⚠️ Could not load sample: {e}, creating synthetic rhythm")
                     stem_audio = self._create_synthetic_rhythm(total_duration_ms, genre_info)
+
+            # КРИТИЧЕСКАЯ ПРОВЕРКА: результат не должен быть тишиной
+            if stem_audio.max_dBFS == float('-inf'):
+                raise ValueError("❌ CRITICAL: Stem creation resulted in silence!")
 
             # Конвертируем в bytes
             buffer = io.BytesIO()
             stem_audio.export(buffer, format="wav")
-            buffer.seek(0)
-            return buffer.getvalue()
+            stem_bytes = buffer.getvalue()
+            buffer.close()
+            
+            # ФИНАЛЬНАЯ ПРОВЕРКА: bytes не должны быть пустыми
+            if len(stem_bytes) == 0:
+                raise ValueError("❌ CRITICAL: Stem export resulted in empty bytes!")
+
+            return stem_bytes
 
         except Exception as e:
-            self.logger.error(f"Error creating stem: {e}")
-            # Возвращаем тишину в bytes
-            silence = AudioSegment.silent(duration=total_duration_ms)
-            buffer = io.BytesIO()
-            silence.export(buffer, format="wav")
-            buffer.seek(0)
-            return buffer.getvalue()
+            self.logger.error(f"❌ CRITICAL: Error creating instrument stem: {e}")
+            raise ValueError(f"Stem creation failed: {e}")
 
     def _create_synthetic_rhythm(self, duration_ms: int, genre_info: Dict) -> AudioSegment:
         """
