@@ -1,5 +1,6 @@
 import os
 import io
+import shutil
 import json
 import logging
 import time
@@ -7,6 +8,7 @@ import tempfile
 from typing import Dict, Optional, Any, Union
 from pathlib import Path
 from dataclasses import asdict
+from shutil import which
 from pydub import AudioSegment, effects
 from config import config
 
@@ -217,38 +219,43 @@ class ExportManager:
 
     def check_export_environment(self) -> dict:
         """
-        Проверка окружения для экспорта
-        Возвращает словарь с результатами проверок
+        Возвращает строгий словарь флагов окружения, без исключений.
         """
-        from shutil import which
-        results = {}
-
-        export_dir = getattr(self, "export_dir", None) or "./exports"
-        Path(export_dir).mkdir(parents=True, exist_ok=True)
-
-        # Проверка прав записи
-        results["base_dir_writable"] = os.access(export_dir, os.W_OK)
-
-        # Проверка дискового пространства (например, > 100 МБ)
         try:
-            stat = os.statvfs(export_dir)
-            free_mb = (stat.f_bavail * stat.f_frsize) / (1024 * 1024)
-            results["sufficient_space"] = free_mb > 100
-        except Exception as e:
-            results["sufficient_space"] = False
-            logger.debug(f"Disk space check failed: {e}")
+            base_dir = Path(self.export_dir or "./exports")
+        except Exception:
+            base_dir = Path("./exports")
+
+        try:
+            base_dir.mkdir(parents=True, exist_ok=True)
+            base_dir_writable = os.access(base_dir, os.W_OK)
+        except Exception:
+            base_dir_writable = False
+
+        # Свободное место — некритично, поэтому True по умолчанию
+        try:
+            total, used, free = shutil.disk_usage(str(base_dir))
+            min_free_gb = float(getattr(self, "min_free_gb", 0.2))
+            sufficient_space = (free / (1024 ** 3)) > min_free_gb
+        except Exception:
+            sufficient_space = True
 
         # Проверка pydub
         try:
-            import pydub
-            results["pydub_working"] = hasattr(pydub, "AudioSegment")
+            _ = AudioSegment.silent(duration=50)
+            pydub_working = True
         except Exception:
-            results["pydub_working"] = False
+            pydub_working = False
 
         # Проверка наличия ffmpeg/sox
-        results["ffmpeg_or_sox"] = (which("ffmpeg") is not None or which("sox") is not None)
+        ffmpeg_or_sox = (which("ffmpeg") is not None or which("sox") is not None)
 
-        return results
+        return {
+            "base_dir_writable": bool(base_dir_writable),
+            "sufficient_space": bool(sufficient_space),
+            "pydub_working": bool(pydub_working),
+            "ffmpeg_or_sox": bool(ffmpeg_or_sox),
+        }
     
     async def save_intermediate(self, name: str, audio_bytes: bytes, output_dir: str) -> str:
         """Сохраняет промежуточный файл"""
