@@ -95,6 +95,7 @@ class WaveDreamPipeline:
         """
         Исправленная главная функция генерации
         """
+        exported_files = {}
         start_time = time.time()
 
         try:
@@ -102,9 +103,15 @@ class WaveDreamPipeline:
             self.logger.info("🔍 Проверка окружения...")
             env_checks = self.export_manager.check_export_environment()
 
-            critical_checks = ["base_dir_writable", "sufficient_space", "pydub_working"]
+            # ИСПРАВЛЕНО: убираем sufficient_space из критических проверок
+            critical_checks = ["base_dir_writable", "pydub_working"]
             failed_critical = [check for check in critical_checks if not env_checks.get(check, False)]
-
+            
+            # Проверяем место, но НЕ критично
+            space_ok = env_checks.get("sufficient_space", True)  # По умолчанию True
+            if not space_ok:
+                self.logger.warning("⚠️ Мало места на диске, но продолжаем работу")
+            
             if failed_critical:
                 error_msg = f"Критические проверки не пройдены: {', '.join(failed_critical)}"
                 self.logger.error(f"❌ {error_msg}")
@@ -121,7 +128,7 @@ class WaveDreamPipeline:
 
             result = GenerationResult(
                 success=True,
-                final_path=final_path or exported_files.get("final"),
+                final_path=exported_files.get("final"),
                 structure_data=structure,
                 used_samples=selected_samples,
                 mastering_config=mastering_config,
