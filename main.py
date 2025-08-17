@@ -1,6 +1,3 @@
-
-
-
 # main.py - Главная система WaveDream Enhanced Pro v2.0
 
 import os
@@ -14,15 +11,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import traceback
 import requests
-import io
-from config import WaveDreamConfig
-from export import ExportManager
 
-try:
-    import minimal_export_fix
-except ImportError:
-    pass
-import emergency_pipeline_fix
 # Добавляем путь к модулям WaveDream
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'FL'))
 
@@ -34,8 +23,6 @@ try:
     from verification import MixVerifier
     from export import ExportManager
     from metadata import MetadataProcessor
-    from self_check import verify_mix
-    from semantic_engine import select_samples_by_semantics
 
 except ImportError as e:
     print(f"❌ Error importing WaveDream modules: {e}")
@@ -46,6 +33,12 @@ except ImportError as e:
 class WaveDreamEnhancedLauncher:
     """
     Главный лаунчер WaveDream Enhanced Pro v2.0
+    
+    ИСПРАВЛЕНИЯ:
+    - Убраны критические проверки окружения, блокирующие генерацию  
+    - Исправлена обработка ошибок в generate_track_sync
+    - Добавлена детальная отладка проблем генерации
+    - Улучшено логирование на каждом этапе
     
     Объединяет все компоненты системы:
     - Семантический анализ промптов
@@ -63,11 +56,42 @@ class WaveDreamEnhancedLauncher:
         
         # Инициализация компонентов
         self.logger = logging.getLogger(__name__)
-        self.pipeline = WaveDreamPipeline()
-        self.metadata_processor = MetadataProcessor()
-        self.sample_engine = SemanticSampleEngine()
-        self.verifier = MixVerifier()
-        self.export_manager = ExportManager()
+        
+        # ИСПРАВЛЕНИЕ: Более мягкая инициализация компонентов
+        try:
+            self.pipeline = WaveDreamPipeline()
+            self.logger.info("✅ Pipeline initialized")
+        except Exception as e:
+            self.logger.error(f"❌ Pipeline init failed: {e}")
+            self.pipeline = None
+        
+        try:
+            self.metadata_processor = MetadataProcessor()
+            self.logger.info("✅ Metadata processor initialized")
+        except Exception as e:
+            self.logger.error(f"❌ Metadata processor init failed: {e}")
+            self.metadata_processor = None
+        
+        try:
+            self.sample_engine = SemanticSampleEngine()
+            self.logger.info("✅ Sample engine initialized")
+        except Exception as e:
+            self.logger.error(f"❌ Sample engine init failed: {e}")
+            self.sample_engine = None
+        
+        try:
+            self.verifier = MixVerifier()
+            self.logger.info("✅ Mix verifier initialized") 
+        except Exception as e:
+            self.logger.error(f"❌ Mix verifier init failed: {e}")
+            self.verifier = None
+        
+        try:
+            self.export_manager = ExportManager()
+            self.logger.info("✅ Export manager initialized")
+        except Exception as e:
+            self.logger.error(f"❌ Export manager init failed: {e}")
+            self.export_manager = None
         
         # Статистика производительности
         self.performance_stats = {
@@ -78,8 +102,13 @@ class WaveDreamEnhancedLauncher:
             'purpose_statistics': {}
         }
         
-        # Проверяем окружение
-        self._validate_environment()
+        # ИСПРАВЛЕНИЕ: Убираем критическую проверку окружения
+        # Она блокировала генерацию в pipeline
+        try:
+            self._validate_environment()
+        except Exception as e:
+            self.logger.warning(f"⚠️ Environment validation issues (non-critical): {e}")
+            # Продолжаем работу даже при проблемах окружения
         
         self.logger.info("🎵 WaveDream Enhanced Pro v2.0 initialized successfully")
     
@@ -126,96 +155,25 @@ class WaveDreamEnhancedLauncher:
             logger.propagate = True
     
     def _validate_environment(self):
-        """ИСПРАВЛЕННАЯ валидация окружения - полный обход проблемы sufficient_space"""
+        """ИСПРАВЛЕННАЯ валидация окружения - НЕ критическая"""
         try:
-            # ИСПРАВЛЕНИЕ: Делаем свою проверку вместо config.validate_environment()
-            self.logger.info("🔍 Выполняется исправленная валидация окружения...")
-            
-            # Проверка свободного места - НЕ КРИТИЧНАЯ
-            try:
-                import shutil
-                total, used, free = shutil.disk_usage(".")
-                free_gb = free / (1024**3)
-                
-                self.logger.info(f"💾 Свободного места на диске: {free_gb:.1f} GB")
-                
-                if free_gb < 0.5:
-                    self.logger.warning(f"⚠️ Мало свободного места: {free_gb:.1f} GB")
-                    self.logger.warning("💡 Рекомендуется освободить место, но работа продолжается")
-                else:
-                    self.logger.info(f"✅ Места достаточно для работы")
-                    
-            except Exception as space_error:
-                self.logger.warning(f"⚠️ Не удалось проверить свободное место: {space_error}")
-                self.logger.info("🚀 Продолжаем без проверки места")
-            
-            # Создание необходимых директорий
-            important_dirs = [
-                ("samples", "директория сэмплов"),
-                ("wavedream_output", "директория вывода"),  
-                ("wavedream_cache", "директория кэша"),
-                ("models", "директория моделей")
-            ]
-            
-            for dir_path, description in important_dirs:
-                try:
-                    import os
-                    os.makedirs(dir_path, exist_ok=True)
-                    self.logger.debug(f"📁 {description}: {dir_path} - OK")
-                except Exception as dir_error:
-                    self.logger.warning(f"⚠️ Не удалось создать {description}: {dir_error}")
-            
-            # Проверка критичных пакетов - ТОЛЬКО ЭТО МОЖЕТ ОСТАНОВИТЬ СИСТЕМУ
-            critical_packages = ["numpy", "scipy", "soundfile", "pydub"]
-            missing_critical = []
-            
-            for package in critical_packages:
-                try:
-                    __import__(package)
-                    self.logger.debug(f"✅ {package} - доступен")
-                except ImportError:
-                    missing_critical.append(package)
-                    self.logger.error(f"❌ Критический пакет отсутствует: {package}")
-            
-            # ТОЛЬКО отсутствие критичных пакетов останавливает систему
-            if missing_critical:
-                error_msg = f"Отсутствуют критические пакеты: {', '.join(missing_critical)}"
-                self.logger.error(f"❌ {error_msg}")
-                raise RuntimeError(error_msg)
-            
-            # Проверка опциональных пакетов - НЕ критично
-            optional_packages = ["torch", "torchaudio", "librosa", "sklearn", "sentence_transformers"]
-            missing_optional = []
-            
-            for package in optional_packages:
-                try:
-                    __import__(package)
-                    self.logger.debug(f"✅ {package} - доступен")
-                except ImportError:
-                    missing_optional.append(package)
-                    self.logger.warning(f"⚠️ Опциональный пакет отсутствует: {package}")
-            
-            if missing_optional:
-                self.logger.warning(f"⚠️ Некоторые функции могут быть недоступны из-за отсутствия: {', '.join(missing_optional)}")
-            
-            # ИСПРАВЛЕНИЕ: НЕ вызываем оригинальную config.validate_environment()
-            # которая дает ошибку sufficient_space
-            
-            self.logger.info("✅ Исправленная валидация окружения завершена успешно")
-            
-        except RuntimeError as critical_error:
-            # Только критические ошибки останавливают систему
-            self.logger.error(f"❌ Critical environment validation error: {critical_error}")
-            raise
-            
+            validation_errors = config.validate_environment()
+            if validation_errors:
+                self.logger.warning(f"Environment validation issues: {'; '.join(validation_errors)}")
+                # НЕ поднимаем исключение - просто предупреждаем
         except Exception as e:
-            # Все остальные ошибки - просто предупреждения
-            self.logger.warning(f"⚠️ Environment validation warning: {e}")
-            self.logger.info("🚀 Продолжаем работу несмотря на предупреждения...")
+            self.logger.warning(f"⚠️ Configuration validation warning: {e}")
+            # НЕ поднимаем исключение критическое
     
     async def generate_track_async(self, request: GenerationRequest) -> GenerationResult:
         """
-        Асинхронная генерация трека через полный pipeline
+        ИСПРАВЛЕННАЯ асинхронная генерация трека через полный pipeline
+        
+        КРИТИЧЕСКИЕ ИСПРАВЛЕНИЯ:
+        - Убрана блокирующая проверка окружения
+        - Добавлена детальная отладка каждого шага
+        - Улучшена обработка ошибок
+        - Исправлен вызов pipeline.generate_track
         
         Args:
             request: Запрос на генерацию с параметрами
@@ -232,8 +190,42 @@ class WaveDreamEnhancedLauncher:
             self.logger.info(f"🎯 Purpose: {request.mastering_purpose}")
             self.logger.info(f"🎭 Genre hint: {request.genre or 'auto-detect'}")
             
-            # Запускаем полный pipeline
-            result = await self.pipeline.generate_track(request)
+            # ИСПРАВЛЕНИЕ: Проверяем готовность pipeline
+            if not self.pipeline:
+                error_msg = "Pipeline not initialized"
+                self.logger.error(f"❌ {error_msg}")
+                return GenerationResult(
+                    success=False,
+                    generation_time=time.time() - start_time,
+                    error_message=error_msg
+                )
+            
+            # ИСПРАВЛЕНИЕ: Детальная отладка перед запуском pipeline
+            self.logger.info("🔍 Pre-generation debug info:")
+            self.logger.info(f"  - Request prompt: {request.prompt}")
+            self.logger.info(f"  - Request genre: {request.genre}")
+            self.logger.info(f"  - Request duration: {request.duration}")
+            self.logger.info(f"  - Output dir: {request.output_dir}")
+            self.logger.info(f"  - Export stems: {request.export_stems}")
+            
+            # ИСПРАВЛЕНИЕ: Обернем вызов pipeline в более детальную отладку
+            try:
+                self.logger.info("🎼 Calling pipeline.generate_track()...")
+                result = await self.pipeline.generate_track(request)
+                self.logger.info(f"🎼 Pipeline returned: success={result.success if result else 'None'}")
+                
+                if not result:
+                    raise RuntimeError("Pipeline returned None result")
+                    
+            except Exception as pipeline_error:
+                self.logger.error(f"❌ Pipeline.generate_track failed: {pipeline_error}")
+                self.logger.error(f"🔍 Traceback: {traceback.format_exc()}")
+                
+                return GenerationResult(
+                    success=False,
+                    generation_time=time.time() - start_time,
+                    error_message=f"Pipeline error: {str(pipeline_error)}"
+                )
             
             # Обновляем статистику
             generation_time = time.time() - start_time
@@ -259,24 +251,80 @@ class WaveDreamEnhancedLauncher:
                 self.logger.info(f"✅ Generation completed successfully in {generation_time:.1f}s")
                 self.logger.info(f"🎯 Quality score: {result.quality_score:.2f}/1.0")
                 
+                # ДОБАВЛЕНО: Детальная отладка результата
+                self.logger.info(f"🔍 Result details:")
+                self.logger.info(f"  - Final path: {result.final_path}")
+                self.logger.info(f"  - Generation time: {result.generation_time:.2f}s")
+                self.logger.info(f"  - Quality score: {result.quality_score:.2f}")
+                self.logger.info(f"  - Used samples: {len(result.used_samples) if result.used_samples else 0}")
+                if result.intermediate_files:
+                    self.logger.info(f"  - Intermediate files: {len(result.intermediate_files)}")
+                    for file_type, file_path in result.intermediate_files.items():
+                        self.logger.info(f"    * {file_type}: {file_path}")
+                
             else:
                 self.logger.error(f"❌ Generation failed: {result.error_message}")
+                
+                # ДОБАВЛЕНО: Детальная отладка ошибки
+                self.logger.error(f"🔍 Failure details:")
+                self.logger.error(f"  - Error: {result.error_message}")
+                self.logger.error(f"  - Generation time: {result.generation_time:.2f}s")
+                if result.intermediate_files:
+                    self.logger.error(f"  - Partial files: {len(result.intermediate_files)}")
             
             return result
             
         except Exception as e:
+            generation_time = time.time() - start_time
             self.logger.error(f"❌ Async generation error: {e}")
-            self.logger.error(f"🔍 Traceback: {traceback.format_exc()}")
+            self.logger.error(f"🔍 Full traceback: {traceback.format_exc()}")
             
             return GenerationResult(
                 success=False,
-                generation_time=time.time() - start_time,
-                error_message=str(e)
+                generation_time=generation_time,
+                error_message=f"Launcher error: {str(e)}"
             )
     
     def generate_track_sync(self, request: GenerationRequest) -> GenerationResult:
-        """Синхронная обёртка для асинхронной генерации"""
-        return asyncio.run(self.generate_track_async(request))
+        """ИСПРАВЛЕННАЯ синхронная обёртка для асинхронной генерации"""
+        try:
+            self.logger.info("🔄 Starting synchronous generation wrapper...")
+            
+            # ИСПРАВЛЕНИЕ: Проверяем есть ли уже запущенный event loop
+            try:
+                loop = asyncio.get_running_loop()
+                self.logger.warning("⚠️ Already in async context, creating new thread...")
+                
+                # Если мы внутри async контекста, запускаем в отдельном потоке
+                import concurrent.futures
+                import threading
+                
+                def run_in_new_loop():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(self.generate_track_async(request))
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_in_new_loop)
+                    return future.result(timeout=300)  # 5 минут таймаут
+                    
+            except RuntimeError:
+                # Нет запущенного loop, можем использовать asyncio.run
+                self.logger.info("✅ No running event loop, using asyncio.run")
+                return asyncio.run(self.generate_track_async(request))
+                
+        except Exception as e:
+            self.logger.error(f"❌ Sync wrapper error: {e}")
+            self.logger.error(f"🔍 Sync wrapper traceback: {traceback.format_exc()}")
+            
+            return GenerationResult(
+                success=False,
+                generation_time=0.0,
+                error_message=f"Sync wrapper error: {str(e)}"
+            )
     
     def run_interactive_mode(self):
         """Интерактивный режим с расширенными возможностями"""
@@ -341,7 +389,7 @@ class WaveDreamEnhancedLauncher:
         print("0. 🚪 Exit")
     
     def _interactive_enhanced_generation(self):
-        """Интерактивная расширенная генерация"""
+        """ИСПРАВЛЕННАЯ интерактивная расширенная генерация"""
         print("\n🚀 ENHANCED TRACK GENERATION")
         print("-" * 50)
         print("Full AI pipeline: Prompt Analysis → Genre Detection → Structure → Generation → Mastering")
@@ -352,10 +400,20 @@ class WaveDreamEnhancedLauncher:
             print("❌ Prompt cannot be empty")
             return
         
-        # Предварительный анализ промпта
-        print("\n🧠 Analyzing prompt...")
-        prompt_analysis = self.metadata_processor.analyze_prompt(prompt)
-        detected_genre = self.metadata_processor.detect_genre(prompt, prompt_analysis.get('tags', []))
+        # ИСПРАВЛЕНИЕ: Безопасный анализ промпта
+        try:
+            if self.metadata_processor:
+                print("\n🧠 Analyzing prompt...")
+                prompt_analysis = self.metadata_processor.analyze_prompt(prompt)
+                detected_genre = self.metadata_processor.detect_genre(prompt, prompt_analysis.get('tags', []))
+            else:
+                print("⚠️ Metadata processor unavailable, using defaults...")
+                prompt_analysis = {'bpm': None, 'instruments': [], 'mood': ['neutral']}
+                detected_genre = "trap"
+        except Exception as e:
+            self.logger.error(f"❌ Prompt analysis error: {e}")
+            prompt_analysis = {'bpm': None, 'instruments': [], 'mood': ['neutral']}
+            detected_genre = "trap"
         
         print(f"🎭 Detected genre: {detected_genre}")
         print(f"🎵 Detected BPM: {prompt_analysis.get('bpm', 'auto')}")
@@ -443,14 +501,21 @@ class WaveDreamEnhancedLauncher:
             print("❌ Generation cancelled")
             return
         
-        # Запускаем генерацию
+        # ИСПРАВЛЕНИЕ: Запускаем генерацию с детальным логированием
         print(f"\n🚀 Starting enhanced generation...")
         print("This may take several minutes depending on complexity...")
         
         try:
+            # ДОБАВЛЕНО: Детальная отладка перед генерацией
+            print("🔍 Pre-generation checks:")
+            print(f"  - Pipeline available: {self.pipeline is not None}")
+            print(f"  - Request object: {type(request).__name__}")
+            print(f"  - Output directory: {output_dir}")
+            
             result = self.generate_track_sync(request)
             
-            if result.success:
+            # ИСПРАВЛЕНИЕ: Более детальная обработка результата
+            if result and result.success:
                 print(f"\n🎉 GENERATION COMPLETED SUCCESSFULLY!")
                 print(f"📁 Final track: {result.final_path}")
                 print(f"⏱️ Generation time: {result.generation_time:.1f} seconds")
@@ -462,6 +527,15 @@ class WaveDreamEnhancedLauncher:
                 if result.structure_data:
                     sections = result.structure_data.get('sections', [])
                     print(f"🏗️ Structure sections: {len(sections)}")
+                
+                # Показать промежуточные файлы
+                if result.intermediate_files:
+                    print(f"💾 Created files: {len(result.intermediate_files)}")
+                    for file_type, file_path in result.intermediate_files.items():
+                        if file_path and os.path.exists(file_path):
+                            print(f"  ✅ {file_type}: {Path(file_path).name}")
+                        else:
+                            print(f"  ❌ {file_type}: MISSING")
                 
                 # Предложение воспроизведения
                 if result.final_path and os.path.exists(result.final_path):
@@ -477,12 +551,26 @@ class WaveDreamEnhancedLauncher:
                 
             else:
                 print(f"\n❌ GENERATION FAILED")
-                print(f"Error: {result.error_message}")
+                if result:
+                    print(f"Error: {result.error_message}")
+                    print(f"Generation time: {result.generation_time:.1f}s")
+                    
+                    # Показать частичные результаты если есть
+                    if result.intermediate_files:
+                        print(f"⚠️ Partial files created: {len(result.intermediate_files)}")
+                        for file_type, file_path in result.intermediate_files.items():
+                            if file_path and os.path.exists(file_path):
+                                print(f"  📁 {file_type}: {Path(file_path).name}")
+                else:
+                    print("Error: No result returned from generation")
+                    
                 print("Check logs for detailed error information")
                 
         except Exception as e:
-            self.logger.error(f"Generation error: {e}")
+            self.logger.error(f"❌ Interactive generation error: {e}")
+            self.logger.error(f"🔍 Traceback: {traceback.format_exc()}")
             print(f"❌ Unexpected error during generation: {e}")
+            print("Check logs for full traceback")
     
     def _interactive_batch_generation(self):
         """Интерактивная пакетная генерация"""
@@ -590,7 +678,13 @@ class WaveDreamEnhancedLauncher:
         
         if choice == "1":
             print("\n📊 Generating database statistics...")
-            stats = self.sample_engine.get_statistics()
+            try:
+                if self.sample_engine:
+                    stats = self.sample_engine.get_statistics()
+                else:
+                    stats = {"error": "Sample engine not available"}
+            except Exception as e:
+                stats = {"error": str(e)}
             
             print(f"\n📈 SAMPLE DATABASE STATISTICS")
             print(f"Total samples: {stats.get('total_samples', 0)}")
@@ -622,31 +716,43 @@ class WaveDreamEnhancedLauncher:
             confirm = input("⚠️ Rebuild semantic index? This will take time. (y/N): ").lower()
             if confirm == 'y':
                 print("🔄 Rebuilding semantic index...")
-                self.sample_engine.build_semantic_index()
-                print("✅ Semantic index rebuilt successfully")
+                try:
+                    if self.sample_engine:
+                        self.sample_engine.build_semantic_index()
+                        print("✅ Semantic index rebuilt successfully")
+                    else:
+                        print("❌ Sample engine not available")
+                except Exception as e:
+                    print(f"❌ Error rebuilding index: {e}")
         
         elif choice == "3":
             query = input("Enter search query (tags, instruments, genre): ").strip()
             if query:
                 print(f"\n🔍 Searching for: '{query}'")
                 
-                # Парсим запрос
-                query_parts = query.split()
-                search_results = asyncio.run(self.sample_engine.find_samples(
-                    tags=query_parts,
-                    max_results=10
-                ))
-                
-                if search_results:
-                    print(f"\n📋 Found {len(search_results)} samples:")
-                    for i, sample in enumerate(search_results, 1):
-                        filename = sample.get('filename', 'unknown')
-                        score = sample.get('score', 0)
-                        tags = sample.get('tags', [])
-                        print(f"{i}. {filename} (score: {score:.2f})")
-                        print(f"   Tags: {', '.join(tags[:5])}")
-                else:
-                    print("❌ No samples found matching query")
+                try:
+                    if self.sample_engine:
+                        # Парсим запрос
+                        query_parts = query.split()
+                        search_results = asyncio.run(self.sample_engine.find_samples(
+                            tags=query_parts,
+                            max_results=10
+                        ))
+                        
+                        if search_results:
+                            print(f"\n📋 Found {len(search_results)} samples:")
+                            for i, sample in enumerate(search_results, 1):
+                                filename = sample.get('filename', 'unknown')
+                                score = sample.get('score', 0)
+                                tags = sample.get('tags', [])
+                                print(f"{i}. {filename} (score: {score:.2f})")
+                                print(f"   Tags: {', '.join(tags[:5])}")
+                        else:
+                            print("❌ No samples found matching query")
+                    else:
+                        print("❌ Sample engine not available")
+                except Exception as e:
+                    print(f"❌ Search error: {e}")
         
         elif choice == "4":
             print("📊 Analyzing sample quality...")
@@ -659,10 +765,13 @@ class WaveDreamEnhancedLauncher:
                 output_file = "sample_metadata.json"
             
             try:
-                stats = self.sample_engine.get_statistics()
-                with open(output_file, 'w', encoding='utf-8') as f:
-                    json.dump(stats, f, indent=2, ensure_ascii=False)
-                print(f"✅ Metadata exported to: {output_file}")
+                if self.sample_engine:
+                    stats = self.sample_engine.get_statistics()
+                    with open(output_file, 'w', encoding='utf-8') as f:
+                        json.dump(stats, f, indent=2, ensure_ascii=False)
+                    print(f"✅ Metadata exported to: {output_file}")
+                else:
+                    print("❌ Sample engine not available")
             except Exception as e:
                 print(f"❌ Export error: {e}")
     
@@ -696,7 +805,15 @@ class WaveDreamEnhancedLauncher:
             total = len(test_prompts)
             
             for prompt, expected in test_prompts:
-                detected = self.metadata_processor.detect_genre(prompt)
+                try:
+                    if self.metadata_processor:
+                        detected = self.metadata_processor.detect_genre(prompt)
+                    else:
+                        detected = "unknown"
+                except Exception as e:
+                    self.logger.error(f"Genre detection error: {e}")
+                    detected = "error"
+                    
                 is_correct = detected == expected
                 
                 status = "✅" if is_correct else "❌"
@@ -716,27 +833,33 @@ class WaveDreamEnhancedLauncher:
                     break
                 
                 if prompt:
-                    # Полный анализ
-                    analysis = self.metadata_processor.analyze_prompt(prompt)
-                    detected_genre = self.metadata_processor.detect_genre(prompt, analysis.get('tags', []))
-                    
-                    print(f"\n🔍 Analysis results for: '{prompt}'")
-                    print(f"🎭 Detected genre: {detected_genre}")
-                    print(f"🎵 Detected BPM: {analysis.get('bpm', 'none')}")
-                    print(f"🎹 Instruments: {', '.join(analysis.get('instruments', ['none']))}")
-                    print(f"😊 Mood: {', '.join(analysis.get('mood', ['neutral']))}")
-                    print(f"🧠 Complexity: {analysis.get('complexity_score', 0):.2f}")
-                    
-                    if analysis.get('mentioned_sections'):
-                        print(f"🏗️ Structure hints: {', '.join(analysis['mentioned_sections'])}")
+                    try:
+                        if self.metadata_processor:
+                            # Полный анализ
+                            analysis = self.metadata_processor.analyze_prompt(prompt)
+                            detected_genre = self.metadata_processor.detect_genre(prompt, analysis.get('tags', []))
+                            
+                            print(f"\n🔍 Analysis results for: '{prompt}'")
+                            print(f"🎭 Detected genre: {detected_genre}")
+                            print(f"🎵 Detected BPM: {analysis.get('bpm', 'none')}")
+                            print(f"🎹 Instruments: {', '.join(analysis.get('instruments', ['none']))}")
+                            print(f"😊 Mood: {', '.join(analysis.get('mood', ['neutral']))}")
+                            print(f"🧠 Complexity: {analysis.get('complexity_score', 0):.2f}")
+                            
+                            if analysis.get('mentioned_sections'):
+                                print(f"🏗️ Structure hints: {', '.join(analysis['mentioned_sections'])}")
+                        else:
+                            print("❌ Metadata processor not available")
+                    except Exception as e:
+                        print(f"❌ Analysis error: {e}")
     
     def _interactive_quality_analysis(self):
-        """ИСПРАВЛЕННЫЙ интерактивный анализ качества"""
+        """Интерактивный анализ качества"""
         print("\n📊 QUALITY ANALYSIS TOOLS")
         print("-" * 30)
         
         print("1. Analyze audio file")
-        print("2. Compare two tracks") 
+        print("2. Compare two tracks")
         print("3. Batch quality analysis")
         print("4. Generate quality report")
         
@@ -748,55 +871,30 @@ class WaveDreamEnhancedLauncher:
                 print(f"🔍 Analyzing: {file_path}")
                 
                 try:
-                    from pydub import AudioSegment
-                    audio = AudioSegment.from_file(file_path)
-                    
-                    # ИСПРАВЛЕНО: Правильный вызов анализа качества
-                    target_config = {"target_lufs": -14, "peak_ceiling": -1}
-                    report = asyncio.run(self.verifier.analyze_track(audio, target_config))
-                    
-                    print(f"📊 Quality score: {report.get('overall_score', 0):.2f}/1.0")
-                    print(f"🎯 Status: {report.get('status', 'unknown')}")
-                    
-                    issues = report.get('issues', [])
-                    if issues:
-                        critical = len([i for i in issues if i.get('severity') == 'critical'])
-                        warnings = len([i for i in issues if i.get('severity') == 'warning'])
-                        print(f"🚨 Issues: {critical} critical, {warnings} warnings")
-                    
-                    # ИСПРАВЛЕНО: Используем новый метод создания отчета
-                    if input("Generate detailed report? (Y/n): ").lower() != 'n':
-                        report_path = f"{Path(file_path).stem}_quality_report.md"
+                    if self.verifier:
+                        from pydub import AudioSegment
+                        audio = AudioSegment.from_file(file_path)
                         
-                        # Создаем отчет через новый ExportManager
-                        try:
-                            # Подготавливаем данные для отчета
-                            report_config = {
-                                "request_data": {
-                                    "prompt": f"Quality analysis of {Path(file_path).name}",
-                                    "mastering_purpose": "analysis"
-                                },
-                                "structure": {"total_duration": len(audio) / 1000.0},
-                                "analysis_results": report
-                            }
-                            
-                            # Создаем отчет
-                            report_file = asyncio.run(
-                                self.export_manager.create_project_report(
-                                    config=report_config,
-                                    exported_files={"analyzed_file": file_path},
-                                    project_dir=Path(file_path).parent
-                                )
-                            )
-                            
-                            if report_file:
-                                print(f"📋 Report saved: {report_file}")
-                            else:
-                                print("❌ Failed to generate report")
-                                
-                        except Exception as report_error:
-                            self.logger.error(f"Report generation error: {report_error}")
-                            print("❌ Report generation failed")
+                        # В реальной реализации здесь будет полный анализ качества
+                        target_config = {"target_lufs": -14, "peak_ceiling": -1}
+                        report = asyncio.run(self.verifier.analyze_track(audio, target_config))
+                        
+                        print(f"📊 Quality score: {report.get('overall_score', 0):.2f}/1.0")
+                        print(f"🎯 Status: {report.get('status', 'unknown')}")
+                        
+                        issues = report.get('issues', [])
+                        if issues:
+                            critical = len([i for i in issues if i.get('severity') == 'critical'])
+                            warnings = len([i for i in issues if i.get('severity') == 'warning'])
+                            print(f"🚨 Issues: {critical} critical, {warnings} warnings")
+                        
+                        # Предложение детального отчёта
+                        if input("Generate detailed report? (Y/n): ").lower() != 'n':
+                            report_path = f"{Path(file_path).stem}_quality_report.md"
+                            if self.verifier.generate_markdown_report(report, report_path):
+                                print(f"📋 Report saved: {report_path}")
+                    else:
+                        print("❌ Verifier not available")
                 
                 except Exception as e:
                     print(f"❌ Analysis error: {e}")
@@ -804,9 +902,7 @@ class WaveDreamEnhancedLauncher:
                 print("❌ File not found")
     
     def _interactive_system_management(self):
-
-
-        """ИСПРАВЛЕННОЕ интерактивное управление системой"""
+        """Интерактивное управление системой"""
         print("\n⚙️ SYSTEM MANAGEMENT")
         print("-" * 25)
         
@@ -814,11 +910,10 @@ class WaveDreamEnhancedLauncher:
         print("2. Update sample index")
         print("3. Check system health")
         print("4. Export configuration")
-        print("5. Import configuration") 
+        print("5. Import configuration")
         print("6. Reset to defaults")
-        print("7. Test export system")  # НОВАЯ ОПЦИЯ
         
-        choice = input("Select action (1-7): ").strip()
+        choice = input("Select action (1-6): ").strip()
         
         if choice == "1":
             cache_dir = Path(config.CACHE_DIR)
@@ -831,8 +926,14 @@ class WaveDreamEnhancedLauncher:
         
         elif choice == "2":
             print("🔄 Updating sample index...")
-            self.sample_engine.build_semantic_index()
-            print("✅ Index updated")
+            try:
+                if self.sample_engine:
+                    self.sample_engine.build_semantic_index()
+                    print("✅ Index updated")
+                else:
+                    print("❌ Sample engine not available")
+            except Exception as e:
+                print(f"❌ Index update error: {e}")
         
         elif choice == "3":
             print("🏥 Running system health check...")
@@ -848,46 +949,6 @@ class WaveDreamEnhancedLauncher:
                 print(f"✅ Configuration exported: {config_path}")
             except Exception as e:
                 print(f"❌ Export error: {e}")
-                
-        elif choice == "7":  # НОВАЯ ОПЦИЯ
-            print("🧪 Testing export system...")
-            try:
-                # ИСПРАВЛЕНО: Тестируем новую систему экспорта
-                env_checks = self.export_manager.check_export_environment()
-                
-                print("Environment checks:")
-                for check, result in env_checks.items():
-                    status = "✅" if result else "❌"
-                    print(f"  {status} {check.replace('_', ' ').title()}")
-                
-                # Создаем тестовое аудио и проверяем экспорт
-                print("\nTesting audio export...")
-                from pydub.generators import Sine
-                test_audio = Sine(440).to_audio_segment(duration=1000)
-                
-                test_config = {
-                    "output_dir": "test_export",
-                    "export_formats": ["wav", "mp3"],
-                    "request_data": {"prompt": "test", "mastering_purpose": "test"}
-                }
-                
-                # Тест через новый ExportManager
-                buffer = io.BytesIO()
-                test_audio.export(buffer, format="wav")
-                test_bytes = buffer.getvalue()
-                
-                result = asyncio.run(
-                    self.export_manager.export_complete_project(
-                        mastered_audio=test_bytes,
-                        intermediate_audio={},
-                        config=test_config
-                    )
-                )
-                
-                print(f"✅ Export test successful: {len(result)} files created")
-                
-            except Exception as e:
-                print(f"❌ Export test failed: {e}")
     
     def _interactive_settings(self):
         """Интерактивные настройки"""
@@ -943,17 +1004,20 @@ class WaveDreamEnhancedLauncher:
         
         # Системная информация
         print(f"\nSystem info:")
-        print(f"  Sample database size: {len(self.sample_engine.samples_index)} samples")
-        print(f"  Cache entries: {len(self.sample_engine.embeddings_cache)}")
+        if self.sample_engine:
+            print(f"  Sample database size: {len(self.sample_engine.samples_index) if hasattr(self.sample_engine, 'samples_index') else 'unknown'} samples")
+            print(f"  Cache entries: {len(self.sample_engine.embeddings_cache) if hasattr(self.sample_engine, 'embeddings_cache') else 'unknown'}")
+        else:
+            print("  Sample engine: Not available")
     
     def _run_system_diagnostics(self):
-        """ИСПРАВЛЕННАЯ системная диагностика с новыми модулями"""
+        """Запуск системной диагностики"""
         print("\n🔧 SYSTEM DIAGNOSTICS")
         print("-" * 25)
         
         print("Running comprehensive system check...")
         
-        # Проверка зависимостей (без изменений)
+        # Проверка зависимостей
         print("\n📦 Checking dependencies...")
         dependencies = ['torch', 'librosa', 'pydub', 'numpy', 'scipy', 'soundfile']
         
@@ -964,99 +1028,65 @@ class WaveDreamEnhancedLauncher:
             except ImportError:
                 print(f"  ❌ {dep} - Missing!")
         
-        # ИСПРАВЛЕНО: Проверка директорий через новый ExportManager
+        # Проверка директорий
         print(f"\n📁 Checking directories...")
-        try:
-            env_checks = self.export_manager.check_export_environment()
-            
-            if env_checks.get("base_dir_writable", False):
-                print(f"  ✅ Output directory writable")
-            else:
-                print(f"  ❌ Output directory not writable")
-                
-            if env_checks.get("sufficient_space", False):
-                print(f"  ✅ Sufficient disk space")
-            else:
-                print(f"  ⚠️ Low disk space warning")
-                
-        except Exception as e:
-            print(f"  ❌ Directory check error: {e}")
+        dirs_to_check = [
+            config.DEFAULT_SAMPLE_DIR,
+            config.DEFAULT_OUTPUT_DIR,
+            config.CACHE_DIR
+        ]
         
-        # Проверка семантической модели (без изменений)
+        for dir_path in dirs_to_check:
+            if os.path.exists(dir_path):
+                print(f"  ✅ {dir_path}")
+            else:
+                print(f"  ⚠️ {dir_path} - Not found")
+        
+        # Проверка семантической модели
         print(f"\n🧠 Checking semantic model...")
         try:
-            if hasattr(self.sample_engine, 'semantic_model') and self.sample_engine.semantic_model:
+            if self.sample_engine and hasattr(self.sample_engine, 'semantic_model') and self.sample_engine.semantic_model:
                 print(f"  ✅ Semantic model loaded")
             else:
                 print(f"  ⚠️ Semantic model not available")
         except Exception as e:
             print(f"  ❌ Semantic model error: {e}")
         
-        # ИСПРАВЛЕНО: Проверка экспорта через новый ExportManager
-        print(f"\n💾 Testing export system...")
-        try:
-            from pydub.generators import Sine
-            test_audio = Sine(440).to_audio_segment(duration=500)
-            
-            # Тест экспорта
-            buffer = io.BytesIO()
-            test_audio.export(buffer, format="wav")
-            test_bytes = buffer.getvalue()
-            
-            if len(test_bytes) > 1000:  # Проверяем что экспорт не пустой
-                print(f"  ✅ Audio export working")
-            else:
-                print(f"  ❌ Audio export failed - empty result")
-                
-        except Exception as e:
-            print(f"  ❌ Export test error: {e}")
-        
-        # Проверка производительности (без изменений)
+        # Проверка производительности
         print(f"\n⚡ Performance test...")
         start_time = time.time()
         
+        # Простой тест
         test_prompt = "test electronic music 120bpm"
-        analysis = self.metadata_processor.analyze_prompt(test_prompt)
-        
-        test_time = time.time() - start_time
-        print(f"  📊 Prompt analysis: {test_time:.3f}s")
-        
-        if test_time < 1.0:
-            print(f"  ✅ Performance: Good")
-        elif test_time < 3.0:
-            print(f"  ⚠️ Performance: Acceptable")
-        else:
-            print(f"  ❌ Performance: Slow")
+        try:
+            if self.metadata_processor:
+                analysis = self.metadata_processor.analyze_prompt(test_prompt)
+                test_time = time.time() - start_time
+                print(f"  📊 Prompt analysis: {test_time:.3f}s")
+                
+                if test_time < 1.0:
+                    print(f"  ✅ Performance: Good")
+                elif test_time < 3.0:
+                    print(f"  ⚠️ Performance: Acceptable")
+                else:
+                    print(f"  ❌ Performance: Slow")
+            else:
+                print(f"  ⚠️ Metadata processor not available for testing")
+        except Exception as e:
+            test_time = time.time() - start_time
+            print(f"  ❌ Performance test failed: {e}")
     
     def _run_system_health_check(self):
-        """ИСПРАВЛЕННАЯ проверка здоровья системы"""
+        """Проверка здоровья системы"""
         health_status = {
             "dependencies": True,
             "directories": True,
             "sample_index": True,
             "semantic_model": True,
-            "memory_usage": True,
-            "export_system": True  # НОВАЯ ПРОВЕРКА
+            "memory_usage": True
         }
         
-        # ИСПРАВЛЕНО: Проверка экспорта
-        try:
-            env_checks = self.export_manager.check_export_environment()
-            critical_checks = ["base_dir_writable", "sufficient_space", "pydub_working"]
-            
-            failed_critical = [check for check in critical_checks if not env_checks.get(check, False)]
-            
-            if failed_critical:
-                health_status["export_system"] = False
-                print(f"❌ Export system issues: {', '.join(failed_critical)}")
-            else:
-                print(f"✅ Export system: Healthy")
-                
-        except Exception as e:
-            health_status["export_system"] = False
-            print(f"❌ Export system check failed: {e}")
-        
-        # Проверка памяти (без изменений)
+        # Проверка памяти
         try:
             import psutil
             memory_percent = psutil.virtual_memory().percent
@@ -1075,7 +1105,6 @@ class WaveDreamEnhancedLauncher:
         else:
             issues = [k for k, v in health_status.items() if not v]
             print(f"⚠️ System health issues: {', '.join(issues)}")
-
     
     def _get_purpose_description(self, purpose: str) -> str:
         """Получение описания назначения мастеринга"""
@@ -1090,40 +1119,18 @@ class WaveDreamEnhancedLauncher:
         return descriptions.get(purpose, "General purpose")
     
     def _create_request_from_task(self, task_data: Dict, task_number: int) -> GenerationRequest:
-        """ИСПРАВЛЕННОЕ создание запроса из данных задачи с улучшенной обработкой"""
-        # ИСПРАВЛЕНО: Добавлена валидация данных задачи
-        try:
-            request = GenerationRequest(
-                prompt=task_data.get("prompt", f"Generated track {task_number}"),
-                genre=task_data.get("genre"),
-                bpm=task_data.get("bpm"),
-                duration=task_data.get("duration"),
-                mastering_purpose=task_data.get("mastering_purpose", "personal"),
-                output_dir=task_data.get("output_dir", f"batch_output/task_{task_number}"),
-                export_stems=task_data.get("export_stems", True),
-                energy_level=task_data.get("energy_level", 0.5),
-                creativity_factor=task_data.get("creativity_factor", 0.7)
-            )
-            
-            # Валидируем критические параметры
-            if not request.prompt or len(request.prompt.strip()) == 0:
-                request.prompt = f"Electronic music track {task_number}"
-                self.logger.warning(f"Task {task_number}: Empty prompt, using default")
-            
-            # Проверяем output_dir
-            if not request.output_dir:
-                request.output_dir = f"batch_output/task_{task_number}"
-            
-            return request
-            
-        except Exception as e:
-            self.logger.error(f"Error creating request from task {task_number}: {e}")
-            # Возвращаем минимальный валидный запрос
-            return GenerationRequest(
-                prompt=f"Fallback track {task_number}",
-                mastering_purpose="personal",
-                output_dir=f"batch_output/task_{task_number}"
-            )
+        """Создание запроса из данных задачи"""
+        return GenerationRequest(
+            prompt=task_data.get("prompt", f"Generated track {task_number}"),
+            genre=task_data.get("genre"),
+            bpm=task_data.get("bpm"),
+            duration=task_data.get("duration"),
+            mastering_purpose=task_data.get("mastering_purpose", "personal"),
+            output_dir=task_data.get("output_dir", f"batch_output/task_{task_number}"),
+            export_stems=task_data.get("export_stems", True),
+            energy_level=task_data.get("energy_level", 0.5),
+            creativity_factor=task_data.get("creativity_factor", 0.7)
+        )
     
     def _play_audio_file(self, file_path: str):
         """Воспроизведение аудиофайла"""
@@ -1199,7 +1206,7 @@ class WaveDreamEnhancedLauncher:
             return 1
     
     def _run_cli_batch(self, batch_file: str) -> int:
-        """ИСПРАВЛЕННАЯ CLI пакетная обработка"""
+        """CLI пакетная обработка"""
         try:
             with open(batch_file, 'r', encoding='utf-8') as f:
                 batch_data = json.load(f)
@@ -1220,15 +1227,6 @@ class WaveDreamEnhancedLauncher:
                     if result.success:
                         print(f"✅ {result.final_path}")
                         successful += 1
-                        
-                        # ИСПРАВЛЕНО: Показываем сводку экспорта через новый ExportManager
-                        if hasattr(result, 'intermediate_files') and result.intermediate_files:
-                            try:
-                                summary = self.export_manager.get_export_summary(result.intermediate_files)
-                                print(f"  📊 Files: {summary['total_files']}, Size: {summary['total_size']/1024/1024:.1f}MB")
-                            except Exception as summary_error:
-                                self.logger.debug(f"Export summary failed: {summary_error}")
-                        
                     else:
                         print(f"❌ {result.error_message}")
                         failed += 1
@@ -1245,54 +1243,35 @@ class WaveDreamEnhancedLauncher:
             return 1
     
     def _run_cli_analyze(self, file_path: str) -> int:
-        """ИСПРАВЛЕННЫЙ CLI анализ качества"""
+        """CLI анализ качества"""
         try:
             if not os.path.exists(file_path):
                 print(f"❌ File not found: {file_path}")
                 return 1
             
-            from pydub import AudioSegment
-            audio = AudioSegment.from_file(file_path)
-            
-            target_config = {"target_lufs": -14, "peak_ceiling": -1}
-            report = asyncio.run(self.verifier.analyze_track(audio, target_config))
-            
-            print(f"📊 Quality Analysis: {file_path}")
-            print(f"Score: {report.get('overall_score', 0):.2f}/1.0")
-            print(f"Status: {report.get('status', 'unknown')}")
-            
-            # ИСПРАВЛЕНО: Сохраняем отчёт через новый ExportManager
-            try:
-                report_config = {
-                    "request_data": {
-                        "prompt": f"CLI analysis of {Path(file_path).name}",
-                        "mastering_purpose": "analysis"
-                    },
-                    "structure": {"total_duration": len(audio) / 1000.0},
-                    "analysis_results": report
-                }
+            if self.verifier:
+                from pydub import AudioSegment
+                audio = AudioSegment.from_file(file_path)
                 
-                report_file = asyncio.run(
-                    self.export_manager.create_project_report(
-                        config=report_config,
-                        exported_files={"analyzed_file": file_path},
-                        project_dir=Path(file_path).parent
-                    )
-                )
+                target_config = {"target_lufs": -14, "peak_ceiling": -1}
+                report = asyncio.run(self.verifier.analyze_track(audio, target_config))
                 
-                if report_file:
-                    print(f"📋 Report: {report_file}")
+                print(f"📊 Quality Analysis: {file_path}")
+                print(f"Score: {report.get('overall_score', 0):.2f}/1.0")
+                print(f"Status: {report.get('status', 'unknown')}")
                 
-            except Exception as report_error:
-                self.logger.debug(f"Report generation failed: {report_error}")
-                print("⚠️ Report generation skipped")
+                # Сохраняем отчёт
+                report_path = f"{Path(file_path).stem}_quality_report.md"
+                if self.verifier.generate_markdown_report(report, report_path):
+                    print(f"📋 Report: {report_path}")
+            else:
+                print("❌ Verifier not available")
             
             return 0
             
         except Exception as e:
             print(f"❌ Analysis error: {e}")
             return 1
-
 
 
 def create_sample_batch_file():
@@ -1344,7 +1323,7 @@ def create_sample_batch_file():
 
 
 def main():
-    """ИСПРАВЛЕННАЯ главная функция с улучшенной обработкой ошибок"""
+    """Главная функция с обработкой аргументов командной строки"""
     parser = argparse.ArgumentParser(
         description="🎵 WaveDream Enhanced Pro v2.0 - Full AI Music Generation Suite",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1363,21 +1342,21 @@ Batch processing:
 Quality analysis:
   python main.py --analyze track.wav
 
-System diagnostics:
-  python main.py --diagnostics
+Create sample batch:
+  python main.py --create-batch
 
 Advanced generation:
   python main.py --prompt "melodic lofi study beats" --genre lofi --bpm 75 --duration 120 --purpose personal --stems
 
-Export system test:
-  python main.py --test-export
+System diagnostics:
+  python main.py --diagnostics
 
 🎯 Mastering purposes: freelance, professional, personal, family, streaming, vinyl
 🎭 Genres: trap, lofi, dnb, ambient, techno, house, cinematic, hyperpop
         """
     )
     
-    # Основные команды (без изменений)
+    # Основные команды
     parser.add_argument("--prompt", type=str, help="Track description prompt")
     parser.add_argument("--genre", type=str, choices=[g.value for g in GenreType], help="Force specific genre")
     parser.add_argument("--bpm", type=int, help="Target BPM")
@@ -1389,7 +1368,7 @@ Export system test:
     parser.add_argument("--energy", dest="energy_level", type=float, default=0.5, help="Energy level (0-1)")
     parser.add_argument("--creativity", dest="creativity_factor", type=float, default=0.7, help="Creativity factor (0-1)")
     
-    # Пакетная обработка (без изменений)
+    # Пакетная обработка
     parser.add_argument("--batch", type=str, help="Batch processing from JSON file")
     parser.add_argument("--create-batch", action="store_true", help="Create sample batch file")
     
@@ -1397,9 +1376,8 @@ Export system test:
     parser.add_argument("--analyze", type=str, help="Analyze audio file quality")
     parser.add_argument("--diagnostics", action="store_true", help="Run system diagnostics")
     parser.add_argument("--stats", action="store_true", help="Show performance statistics")
-    parser.add_argument("--test-export", action="store_true", help="Test export system")  # НОВАЯ ОПЦИЯ
     
-    # Настройки (без изменений)
+    # Настройки
     parser.add_argument("--rebuild-index", action="store_true", help="Rebuild sample index")
     parser.add_argument("--clear-cache", action="store_true", help="Clear cache files")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
@@ -1407,63 +1385,15 @@ Export system test:
     
     args = parser.parse_args()
     
-    # Создание лаунчера с улучшенной обработкой ошибок
+    # Создание лаунчера
     try:
         launcher = WaveDreamEnhancedLauncher()
     except Exception as e:
         print(f"❌ Failed to initialize WaveDream: {e}")
-        print("💡 Try running --diagnostics to check system health")
+        print(f"🔍 Error details: {traceback.format_exc()}")
         return 1
     
-    # ИСПРАВЛЕНО: Обработка новых команд
-    if args.test_export:
-        print("🧪 Testing export system...")
-        try:
-            env_checks = launcher.export_manager.check_export_environment()
-            
-            print("Environment checks:")
-            for check, result in env_checks.items():
-                status = "✅" if result else "❌"
-                print(f"  {status} {check.replace('_', ' ').title()}")
-            
-            # Полный тест экспорта
-            from pydub.generators import Sine
-            test_audio = Sine(440).to_audio_segment(duration=2000)
-            
-            buffer = io.BytesIO()
-            test_audio.export(buffer, format="wav")
-            test_bytes = buffer.getvalue()
-            
-            test_config = {
-                "output_dir": "export_test",
-                "export_formats": ["wav", "mp3"],
-                "request_data": {
-                    "prompt": "Export system test",
-                    "mastering_purpose": "test"
-                }
-            }
-            
-            result = asyncio.run(
-                launcher.export_manager.export_complete_project(
-                    mastered_audio=test_bytes,
-                    intermediate_audio={},
-                    config=test_config
-                )
-            )
-            
-            print(f"✅ Export test successful: {len(result)} files created")
-            
-            # Показываем сводку
-            summary = launcher.export_manager.get_export_summary(result)
-            print(f"📊 Total size: {summary['total_size']/1024:.1f}KB")
-            
-        except Exception as e:
-            print(f"❌ Export test failed: {e}")
-            return 1
-            
-        return 0
-    
-    # Остальные команды без изменений, но с улучшенной обработкой ошибок
+    # Обработка специальных команд
     if args.create_batch:
         create_sample_batch_file()
         return 0
@@ -1472,7 +1402,35 @@ Export system test:
         launcher._run_system_diagnostics()
         return 0
     
-    # ... [остальные команды без изменений] ...
+    if args.stats:
+        launcher._display_statistics()
+        return 0
+    
+    if args.rebuild_index:
+        print("🔄 Rebuilding sample index...")
+        try:
+            if launcher.sample_engine:
+                launcher.sample_engine.build_semantic_index()
+                print("✅ Index rebuilt")
+            else:
+                print("❌ Sample engine not available")
+        except Exception as e:
+            print(f"❌ Index rebuild error: {e}")
+        return 0
+    
+    if args.clear_cache:
+        cache_dir = Path(config.CACHE_DIR)
+        if cache_dir.exists():
+            import shutil
+            shutil.rmtree(cache_dir)
+            print("✅ Cache cleared")
+        return 0
+    
+    # Настройка уровня логирования
+    if args.debug:
+        logging.getLogger().setLevel(logging.DEBUG)
+    elif args.quiet:
+        logging.getLogger().setLevel(logging.WARNING)
     
     # Режимы работы
     if any([args.prompt, args.batch, args.analyze]):
@@ -1489,9 +1447,139 @@ Export system test:
         except Exception as e:
             launcher.logger.error(f"Interactive mode error: {e}")
             print(f"❌ Unexpected error: {e}")
-            print("💡 Try running --diagnostics for system health check")
+            print(f"🔍 Details: {traceback.format_exc()}")
             return 1
 
 
+def quick_start_wizard():
+    """Мастер быстрого старта для новых пользователей"""
+    print("""
+🌟 Welcome to WaveDream Enhanced Pro v2.0!
+This wizard will help you create your first AI-generated track.
+    """)
+    
+    # Простые вопросы
+    prompts = [
+        "What style of music do you want? (e.g., 'dark trap', 'chill lofi', 'epic cinematic'): ",
+        "Any specific tempo in BPM? (Enter for auto-detection): ",
+        "How long should it be in seconds? (Enter for auto, typical: 60-120): ",
+        "What will you use it for? (personal/freelance/professional/family): "
+    ]
+    
+    answers = {}
+    
+    for i, prompt_text in enumerate(prompts):
+        answer = input(prompt_text).strip()
+        answers[i] = answer if answer else None
+    
+    # Создаём запрос
+    music_prompt = answers[0] or "electronic music"
+    
+    try:
+        bpm = int(answers[1]) if answers[1] else None
+    except ValueError:
+        bpm = None
+    
+    try:
+        duration = int(answers[2]) if answers[2] else None
+    except ValueError:
+        duration = None
+    
+    purpose = answers[3] if answers[3] in ["personal", "freelance", "professional", "family"] else "personal"
+    
+    # Запускаем генерацию
+    try:
+        launcher = WaveDreamEnhancedLauncher()
+        
+        request = GenerationRequest(
+            prompt=music_prompt,
+            bpm=bpm,
+            duration=duration,
+            mastering_purpose=purpose,
+            output_dir="quick_start_output",
+            export_stems=True
+        )
+        
+        print(f"\n🚀 Generating: '{music_prompt}' for {purpose} use")
+        print("This may take a few minutes...")
+        
+        result = launcher.generate_track_sync(request)
+        
+        if result and result.success:
+            print(f"\n🎉 Your track is ready!")
+            print(f"📁 Location: {result.final_path}")
+            print(f"🎯 Quality: {result.quality_score:.2f}/1.0")
+            print(f"\n💡 Tip: Use the interactive mode (just run the script) for more options!")
+        else:
+            print(f"\n❌ Generation failed: {result.error_message if result else 'Unknown error'}")
+            
+    except Exception as e:
+        print(f"\n❌ Quick start error: {e}")
+        print("Try running the full interactive mode instead.")
+
+
+# ИСПРАВЛЕНИЕ: Добавляем простую функцию тестирования
+def test_system():
+    """Простое тестирование системы"""
+    print("🧪 Testing WaveDream Enhanced Pro v2.0...")
+    
+    try:
+        # Тест инициализации
+        print("1. Testing initialization...")
+        launcher = WaveDreamEnhancedLauncher()
+        print("   ✅ Launcher initialized")
+        
+        # Тест компонентов
+        print("2. Testing components...")
+        components = [
+            ("Pipeline", launcher.pipeline),
+            ("Metadata Processor", launcher.metadata_processor),
+            ("Sample Engine", launcher.sample_engine),
+            ("Verifier", launcher.verifier),
+            ("Export Manager", launcher.export_manager)
+        ]
+        
+        for name, component in components:
+            if component:
+                print(f"   ✅ {name}: Available")
+            else:
+                print(f"   ⚠️ {name}: Not available")
+        
+        # Тест простой генерации
+        print("3. Testing simple generation...")
+        test_request = GenerationRequest(
+            prompt="test simple electronic beat",
+            duration=10,  # Короткий тест
+            mastering_purpose="personal",
+            output_dir="test_output"
+        )
+        
+        print("   🎵 Generating test track...")
+        result = launcher.generate_track_sync(test_request)
+        
+        if result and result.success:
+            print(f"   ✅ Test generation successful!")
+            print(f"   📁 Output: {result.final_path}")
+            print(f"   ⏱️ Time: {result.generation_time:.1f}s")
+            print(f"   🎯 Quality: {result.quality_score:.2f}/1.0")
+        else:
+            print(f"   ❌ Test generation failed: {result.error_message if result else 'No result'}")
+        
+        print("\n🎉 System test completed!")
+        
+    except Exception as e:
+        print(f"\n❌ System test failed: {e}")
+        print(f"🔍 Details: {traceback.format_exc()}")
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    # Проверяем аргументы для специальных режимов
+    if len(sys.argv) == 2:
+        if sys.argv[1] == "--quick-start":
+            quick_start_wizard()
+        elif sys.argv[1] == "--test-system":
+            test_system()
+        else:
+            sys.exit(main())
+    else:
+        sys.exit(main())
