@@ -2,7 +2,10 @@
 
 import logging
 import numpy as np
-from typing import Dict, List, Optional, Tuple, Union
+import asyncio
+from typing import Dict, List, Optional, Tuple, Union, Any
+import time
+from pathlib import Path
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -92,51 +95,86 @@ class MixVerifier:
     
     async def analyze_track(self, audio: Union[bytes, AudioSegment, str], target_config: Dict) -> Dict:
         """
-        ИСПРАВЛЕНО: Полный анализ качества трека без потери данных
+        ИСПРАВЛЕНО: Полный анализ качества трека с защитой от всех ошибок
         """
         self.logger.info("🔍 Starting quality verification...")
         
         try:
+            # ИСПРАВЛЕНИЕ: Защита от пустого или None аудио
+            if audio is None:
+                raise ValueError("Audio is None")
+                
+            if isinstance(audio, bytes) and len(audio) == 0:
+                raise ValueError("Audio bytes are empty")
+            
             # ИСПРАВЛЕНИЕ: Безопасная конвертация
-            audio_segment = self._safe_audio_conversion(audio)
+            try:
+                audio_segment = self._safe_audio_conversion(audio)
+            except Exception as conv_error:
+                self.logger.error(f"❌ Audio conversion failed: {conv_error}")
+                return self._create_emergency_report(f"Audio conversion failed: {conv_error}")
             
             # Проверяем, что аудио не пустое
             if len(audio_segment) == 0:
-                raise ValueError("Empty audio segment")
+                raise ValueError("Empty audio segment after conversion")
             
             self.logger.info(f"  📊 Audio info: {len(audio_segment)}ms, {audio_segment.channels}ch, {audio_segment.frame_rate}Hz")
             
-            # Проводим все проверки
+            # Проводим все проверки с защитой от ошибок
             issues = []
             metrics = {}
             
             # 1. Анализ громкости
-            loudness_issues, loudness_metrics = await self._check_loudness(audio_segment, target_config)
-            issues.extend(loudness_issues)
-            metrics.update(loudness_metrics)
+            try:
+                loudness_issues, loudness_metrics = await self._check_loudness(audio_segment, target_config)
+                issues.extend(loudness_issues)
+                metrics.update(loudness_metrics)
+            except Exception as e:
+                self.logger.error(f"Loudness check failed: {e}")
+                metrics["loudness_error"] = str(e)
             
             # 2. Анализ динамики
-            dynamics_issues, dynamics_metrics = await self._check_dynamics(audio_segment, target_config)
-            issues.extend(dynamics_issues)
-            metrics.update(dynamics_metrics)
+            try:
+                dynamics_issues, dynamics_metrics = await self._check_dynamics(audio_segment, target_config)
+                issues.extend(dynamics_issues)
+                metrics.update(dynamics_metrics)
+            except Exception as e:
+                self.logger.error(f"Dynamics check failed: {e}")
+                metrics["dynamics_error"] = str(e)
             
             # 3. Спектральный анализ
-            spectrum_issues, spectrum_metrics = await self._check_spectrum(audio_segment, target_config)
-            issues.extend(spectrum_issues)
-            metrics.update(spectrum_metrics)
+            try:
+                spectrum_issues, spectrum_metrics = await self._check_spectrum(audio_segment, target_config)
+                issues.extend(spectrum_issues)
+                metrics.update(spectrum_metrics)
+            except Exception as e:
+                self.logger.error(f"Spectrum check failed: {e}")
+                metrics["spectrum_error"] = str(e)
             
             # 4. Стерео анализ
-            stereo_issues, stereo_metrics = await self._check_stereo(audio_segment, target_config)
-            issues.extend(stereo_issues)
-            metrics.update(stereo_metrics)
+            try:
+                stereo_issues, stereo_metrics = await self._check_stereo(audio_segment, target_config)
+                issues.extend(stereo_issues)
+                metrics.update(stereo_metrics)
+            except Exception as e:
+                self.logger.error(f"Stereo check failed: {e}")
+                metrics["stereo_error"] = str(e)
             
             # 5. Проверка артефактов
-            artifacts_issues, artifacts_metrics = await self._check_artifacts(audio_segment)
-            issues.extend(artifacts_issues)
-            metrics.update(artifacts_metrics)
+            try:
+                artifacts_issues, artifacts_metrics = await self._check_artifacts(audio_segment)
+                issues.extend(artifacts_issues)
+                metrics.update(artifacts_metrics)
+            except Exception as e:
+                self.logger.error(f"Artifacts check failed: {e}")
+                metrics["artifacts_error"] = str(e)
             
             # Составляем общий отчёт
             report = self._compile_quality_report(issues, metrics, target_config)
+            
+            # ИСПРАВЛЕНИЕ: Убеждаемся что overall_score всегда есть
+            if "overall_score" not in report or report["overall_score"] is None:
+                report["overall_score"] = 0.5  # Средний балл по умолчанию
             
             # Логируем результат
             overall_score = report["overall_score"]
@@ -153,18 +191,37 @@ class MixVerifier:
             
         except Exception as e:
             self.logger.error(f"❌ Quality analysis error: {e}")
-            return {
-                "success": False,
-                "overall_score": 0.0,
-                "error": str(e),
-                "issues": [QualityIssue(
-                    severity="critical",
-                    category="system",
-                    message=f"Analysis failed: {str(e)}",
-                    suggestion="Check audio format and file integrity"
-                ).__dict__],
-                "metrics": {}
-            }
+            return self._create_emergency_report(str(e))
+
+    def _create_emergency_report(self, error_message: str) -> Dict:
+        """Создание аварийного отчёта при критических ошибках"""
+        return {
+            "success": False,
+            "overall_score": 0.1,  # Очень низкий балл
+            "status": "emergency_fallback",
+            "recommendation": "Manual review required due to analysis failure",
+            "summary": {
+                "critical_issues": 1,
+                "warnings": 0,
+                "info_issues": 0,
+                "total_issues": 1
+            },
+            "issues": [{
+                "severity": "critical",
+                "category": "system",
+                "message": f"Quality analysis failed: {error_message}",
+                "value": None,
+                "threshold": None,
+                "suggestion": "Check audio format and retry analysis"
+            }],
+            "metrics": {
+                "analysis_failed": True,
+                "error_message": error_message
+            },
+            "target_config": {},
+            "analysis_timestamp": None,
+            "compliance": {}
+        }
     
     async def _check_loudness(self, audio: AudioSegment, target_config: Dict) -> Tuple[List[QualityIssue], Dict]:
         """Проверка параметров громкости"""
