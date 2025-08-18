@@ -28,6 +28,7 @@ from verification import MixVerifier
 from sample_engine import EffectsChain
 from export import ExportManager
 
+__all__ = ['WaveDreamPipeline', 'GenerationRequest', 'GenerationResult']
 
 @dataclass
 class GenerationRequest:
@@ -80,12 +81,12 @@ class WaveDreamPipeline:
     def __init__(self):
         self.metadata_processor = MetadataProcessor()
         self.sample_engine = SemanticSampleEngine()
-        self.musicgen_engine = MusicGenEngine()
+        self.musicgen_engine = MusicGenEngine(model_name="facebook/musicgen-medium")
         self.mastering_engine = SmartMasteringEngine()
         self.verifier = MixVerifier()
         self.effects_chain = EffectsChain()
         self.export_manager = ExportManager()
-        
+  
         self.logger = logging.getLogger(__name__)
         self._performance_stats = {}
         
@@ -94,111 +95,123 @@ class WaveDreamPipeline:
         self._intermediate_storage = {}
         
     async def generate_track(self, request: GenerationRequest) -> GenerationResult:
-        """
-        Исправленная главная функция генерации
-        """
-        exported_files = {}
+        """Основной конвейер генерации — с честной проверкой результата"""
         start_time = time.time()
 
-        metadata = None
-        genre_info = None
-        structure = None
-        selected_samples = None
-        base_audio_bytes = None
-        stems_bytes = None
-        mixed_audio_bytes = None
-        processed_audio_bytes = None
-        mastered_audio_bytes = None
-        mastering_config = None
-        mastering_report = None
-        quality_report = None
-        final_path = None
-        self._intermediate_storage = {}
+        final_path: Optional[str] = None
+        quality_report: Optional[Dict] = None
+        intermediate_files: Dict[str, str] = {}
 
         try:
-            # Проверка окружения
-            self.logger.info("🔍 Проверка окружения...")
-            env_checks = self.export_manager.check_export_environment()
-
-            # ИСПРАВЛЕНО: убираем sufficient_space из критических проверок
-            critical_checks = ["base_dir_writable", "pydub_working"]
-            failed_critical = [check for check in critical_checks if not env_checks.get(check, False)]
-            
-            # Проверяем место, но НЕ критично
-            space_ok = env_checks.get("sufficient_space", True)  # По умолчанию True
-            if not space_ok:
-                self.logger.warning("⚠️ Мало места на диске, но продолжаем работу")
-            
-            if failed_critical:
-                error_msg = f"Критические проверки не пройдены: {', '.join(failed_critical)}"
-                self.logger.error(f"❌ {error_msg}")
+            # 0) Проверка окружения экспорта
+            env = self.export_manager.check_export_environment()
+            env_ok = all([
+                env.get("base_dir_writable"),
+                env.get("sufficient_space"),
+                env.get("pydub_working"),
+                env.get("soundfile_working"),
+            ])
+            if not env_ok:
+                msg = f"Export environment is not ready: {env}"
+                self.logger.error(msg)
                 return GenerationResult(
                     success=False,
-                    error_message=error_msg,
-                    generation_time=time.time() - start_time
+                    final_path=None,
+                    generation_time=time.time() - start_time,
+                    quality_score=0.0,
+                    error_message=msg,
+                    intermediate_files={}
                 )
 
-            # ... все этапы (metadata, genre, structure, samples, base, stems, mix, effects, mastering, verify, export)
+            # 1) Метаданные
+            metadata = await self._step_prepare_metadata(request)
+            # 2) Детект жанра
+            genre_info = await self._step_detect_genre(request, metadata)
+            # 3) Структура (твоя функция с авто-энергией)
+            structure = await self._step_generate_structure(request, metadata, genre_info)
 
-            generation_time = time.time() - start_time
-            self._performance_stats["total_time"] = generation_time
+            # 4) БАЗОВАЯ ГЕНЕРАЦИЯ (если у тебя есть шаг — вызовется; если нет — пропустится)
+            base_audio: Optional[bytes] = None
+            if hasattr(self, "_step_generate_base_audio"):
+                base_audio = await self._step_generate_base_audio(request, structure)
+            elif hasattr(self, "musicgen") and hasattr(self.musicgen, "generate_bytes"):
+                # Упрощённый путь, если есть MusicGenEngine
+                bpm = int(structure.get("BPM", 120)) if isinstance(structure, dict) else 120
+                duration = int(getattr(request, "duration", 60) or 60)
+                base_audio = await self.musicgen.generate_bytes(
+                    prompt=request.prompt,
+                    duration=duration,
+                    bpm=bpm
+                )
 
-            result = GenerationResult(
-                success=True,
-                final_path=exported_files.get("final"),
-                structure_data=structure,
-                used_samples=selected_samples,
-                mastering_config=mastering_config,
-                mastering_report=mastering_report,
-                generation_time=generation_time,
-                quality_score=quality_report.get("overall_score", 0.0),
-                intermediate_files={**self._intermediate_storage, **exported_files}
-            )
+            if not base_audio:
+                raise RuntimeError("Базовый генератор не вернул аудио (base_audio is empty)")
 
-            self.logger.info(f"🎉 Генерация завершена за {generation_time:.1f}с")
-            self.logger.info(f"🎯 Качество: {result.quality_score:.2f}/1.0")
-            self.logger.info(f"📁 Всего файлов создано: {len(result.intermediate_files)}")
+            # Сохраняем промежуточный базовый рендер
+            if hasattr(self, "save_intermediate"):
+                path_base = await self.save_intermediate(base_audio, "00_base_render.wav")
+                if path_base:
+                    intermediate_files["00_base_render.wav"] = path_base
 
-            return result
+            # 5) Микс (если есть микшер)
+            mixed_audio = base_audio
+            if hasattr(self, "_step_smart_mix"):
+                mixed_audio = await self._step_smart_mix(request, base_audio, structure, genre_info)
+                if not mixed_audio:
+                    mixed_audio = base_audio
 
-        except Exception as e:  # ← выровнено с try
-            generation_time = time.time() - start_time
-            self.logger.error(f"❌ Ошибка генерации: {e}")
+            # 6) Мастеринг (если есть)
+            mastered_audio = mixed_audio
+            mastering_cfg: Dict = {}
+            if hasattr(self, "_step_mastering"):
+                mastered_audio, mastering_cfg = await self._step_mastering(request, mixed_audio)
 
-            # ЭКСТРЕННОЕ ИСПРАВЛЕНИЕ: Добавляем traceback
-            import traceback
-            self.logger.error(f"🔍 Полный traceback: {traceback.format_exc()}")
+            if not mastered_audio:
+                raise RuntimeError("После микса/мастеринга аудио пустое")
 
-            try:
-                if hasattr(self, '_intermediate_storage') and self._intermediate_storage:
-                    self.logger.info("🚨 Попытка аварийного сохранения...")
+            # 7) Верификация качества (безопасно)
+            if hasattr(self, "_step_verify_quality"):
+                quality_report = await self._step_verify_quality(mastered_audio, mastering_cfg)
+            quality_score = (quality_report or {}).get("overall_score", 0.0)
 
-                    emergency_audio_dict = {}
-                    for stage_name, file_path in self._intermediate_storage.items():
-                        if isinstance(file_path, str) and os.path.exists(file_path):
-                            try:
-                                with open(file_path, 'rb') as f:
-                                    emergency_audio_dict[stage_name] = f.read()
-                            except Exception as read_error:
-                                self.logger.debug(f"Could not read {stage_name}: {read_error}")
+            # 8) Экспорт финального файла
+            filename = f"{metadata.get('project_name', 'project')}_final.wav" if isinstance(metadata, dict) else "project_final.wav"
+            if hasattr(self, "save_final_mix"):
+                final_path = await self.save_final_mix(mastered_audio, metadata, filename)
+            elif hasattr(self.export_manager, "save_audio_bytes"):
+                # Резервный путь через export_manager
+                project_dir = self.export_manager.create_project_dir(getattr(self, "_current_project_name", "project"))
+                final_path = self.export_manager.save_audio_bytes(mastered_audio, os.path.join(project_dir, filename))
 
-                    if 'mastered_audio' in locals() and isinstance(locals()['mastered_audio'], bytes):
-                        emergency_audio_dict['final_mastered'] = locals()['mastered_audio']
-
-                    emergency_files = await self.export_manager.force_save_everything(
-                        emergency_audio_dict,
-                        request.output_dir or "emergency_output"
-                    )
-                    self.logger.info(f"🚨 Аварийно сохранено: {len(emergency_files)} файлов")
-
-            except Exception as save_error:
-                self.logger.error(f"❌ Ошибка аварийного сохранения: {save_error}")
+            # --- ЖЁСТКАЯ ПРОВЕРКА ИТОГА ---
+            if not final_path or not os.path.exists(final_path):
+                # Если нет финального файла и даже промежуточных нет — считаем провалом
+                files_count = len(intermediate_files)
+                raise RuntimeError(f"Экспорт не создал финальный файл (intermediate: {files_count}, final_path: {final_path})")
 
             return GenerationResult(
+                success=True,
+                final_path=final_path,
+                generation_time=time.time() - start_time,
+                quality_score=quality_score,
+                error_message=None,
+                intermediate_files=intermediate_files,
+                structure_data={"detected_genre": (genre_info or {}).get("detected_genre")}
+            )
+
+        except Exception as e:
+            self.logger.error("❌ Ошибка генерации: %s", e, exc_info=True)
+            # Безопасно берём скор, даже если отчёта нет/сломался
+            safe_score = 0.0
+            if isinstance(quality_report, dict):
+                safe_score = float(quality_report.get("overall_score") or 0.0)
+            return GenerationResult(
                 success=False,
-                generation_time=generation_time,
+                final_path=None,
+                generation_time=time.time() - start_time,
+                quality_score=safe_score,
                 error_message=str(e),
-                intermediate_files=getattr(self, '_intermediate_storage', {})
+                intermediate_files=intermediate_files
             )
 
     async def save_intermediate(self, name: str, project_name: str, audio: bytes) -> Optional[str]:
@@ -367,13 +380,8 @@ class WaveDreamPipeline:
 
     def generate_track_sync(self, request):
         """Синхронная обёртка для generate_track (async)"""
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-
-        return loop.run_until_complete(self.generate_track(request))
+        request = GenerationRequest(prompt=prompt, **kwargs)
+        return asyncio.run(pipeline.generate_track(request))
 
     async def _step_generate_structure(
         self, request, metadata: dict = None, genre_info: dict = None
