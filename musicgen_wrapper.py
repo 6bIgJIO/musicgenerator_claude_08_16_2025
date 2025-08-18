@@ -572,7 +572,7 @@ class MusicGenEngine:
         # Сначала пытаемся MusicGen если доступен
         if self.musicgen_available and self.model:
             try:
-                return await self._generate_with_musicgen(
+                return await self._generate_base_composition(
                     prompt, duration, temperature, top_k, top_p, genre_hint
                 )
             except Exception as e:
