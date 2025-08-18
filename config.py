@@ -1,8 +1,75 @@
 # wavedream/core/config.py - Централизованная конфигурация с валидацией
+# === ФИКС PYTORCH ДЛЯ WINDOWS ===
+def fix_pytorch_windows():
+    """Исправляет проблемы с PyTorch на Windows"""
+    try:
+        # Устанавливаем переменные окружения для PyTorch
+        os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+        os.environ['OMP_NUM_THREADS'] = '1'
+        
+        # Добавляем пути к библиотекам
+        if sys.platform.startswith('win'):
+            # Путь к conda/venv библиотекам
+            lib_paths = []
+            
+            # Если виртуальное окружение активно
+            if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+                venv_lib = os.path.join(sys.prefix, 'Library', 'bin')
+                if os.path.exists(venv_lib):
+                    lib_paths.append(venv_lib)
+                
+                venv_lib2 = os.path.join(sys.prefix, 'Lib', 'site-packages', 'torch', 'lib')
+                if os.path.exists(venv_lib2):
+                    lib_paths.append(venv_lib2)
+            
+            # Добавляем пути в PATH
+            for path in lib_paths:
+                if path not in os.environ['PATH']:
+                    os.environ['PATH'] = path + os.pathsep + os.environ['PATH']
+        
+        print("✅ PyTorch Windows fix applied")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ PyTorch fix failed: {e}")
+        return False
 
+# Применяем фикс
+fix_pytorch_windows()
+
+# Теперь безопасный импорт torch
+def safe_import_torch():
+    """Безопасный импорт PyTorch с fallback"""
+    try:
+        import torch
+        print(f"✅ PyTorch loaded: {torch.__version__}")
+        return torch
+    except OSError as e:
+        if "shm.dll" in str(e):
+            print("❌ PyTorch shm.dll error - trying CPU-only mode")
+            try:
+                # Принудительно используем CPU
+                os.environ['CUDA_VISIBLE_DEVICES'] = ''
+                import torch
+                print(f"✅ PyTorch loaded (CPU-only): {torch.__version__}")
+                return torch
+            except Exception as e2:
+                print(f"❌ PyTorch CPU fallback failed: {e2}")
+                return None
+        else:
+            print(f"❌ PyTorch import error: {e}")
+            return None
+    except Exception as e:
+        print(f"❌ PyTorch import failed: {e}")
+        return None
+
+# Используй вместо обычного импорта
+torch = safe_import_torch()
+import sys
 import os
 import json
 import logging
+import warnings
 from pathlib import Path
 from typing import Dict, List, Union, Optional, Tuple, Any
 from dataclasses import dataclass, field
