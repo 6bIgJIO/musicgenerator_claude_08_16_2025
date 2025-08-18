@@ -55,9 +55,10 @@ class MusicGenEngine:
     Создает музыкально осмысленные треки вместо шума
     """
     
-    def __init__(self):
+    def __init__(self, fallback_engine=None):
         self.logger = logging.getLogger(__name__)
         self.sample_rate = 44100
+        self.fallback_engine = fallback_engine
         
     def generate_musical_track(
         self, 
