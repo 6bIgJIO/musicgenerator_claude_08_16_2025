@@ -17,6 +17,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import numpy as np
+from scipy import signal
+from scipy.io.wavfile import write
 
 from config import config, GenreType, MasteringPurpose
 from mistral_client import query_structured_music
@@ -130,12 +133,11 @@ class WaveDreamPipeline:
             # 3) Структура (твоя функция с авто-энергией)
             structure = await self._step_generate_structure(request, metadata, genre_info)
 
-            # 4) БАЗОВАЯ ГЕНЕРАЦИЯ (если у тебя есть шаг — вызовется; если нет — пропустится)
+            # 4) БАЗОВАЯ ГЕНЕРАЦИЯ
             base_audio: Optional[bytes] = None
             if hasattr(self, "_step_generate_base_audio"):
                 base_audio = await self._step_generate_base_audio(request, structure)
             elif hasattr(self, "musicgen") and hasattr(self.musicgen, "generate_bytes"):
-                # Упрощённый путь, если есть MusicGenEngine
                 bpm = int(structure.get("BPM", 120)) if isinstance(structure, dict) else 120
                 duration = int(getattr(request, "duration", 60) or 60)
                 base_audio = await self.musicgen.generate_bytes(
@@ -147,20 +149,82 @@ class WaveDreamPipeline:
             if not base_audio:
                 raise RuntimeError("Базовый генератор не вернул аудио (base_audio is empty)")
 
-            # Сохраняем промежуточный базовый рендер
-            if hasattr(self, "save_intermediate"):
-                path_base = await self.save_intermediate(base_audio, "00_base_render.wav")
-                if path_base:
-                    intermediate_files["00_base_render.wav"] = path_base
+                print(f"🎼 Генерируем: '{prompt}' ({duration}s)")
+                print(f"🎚️ Параметры: temp={temperature}, top_k={top_k}, top_p={top_p}")
 
-            # 5) Микс (если есть микшер)
+            try:
+                # Безопасная длительность
+                safe_duration = min(duration, 30)
+                if duration > 30:
+                    print(f"⚠️ Длительность сокращена с {duration}s до {safe_duration}s")
+
+                # Улучшаем промпт
+                enhanced_prompt = self._enhance_prompt(prompt, genre_hint)
+                print(f"📝 Улучшенный промпт: {enhanced_prompt}")
+
+                # Настраиваем параметры генерации
+                self.model.set_generation_params(
+                    duration=safe_duration,
+                    use_sampling=True,
+                    temperature=temperature,
+                    top_k=top_k,
+                    top_p=top_p
+                )
+
+                # ГЕНЕРАЦИЯ
+                print("⚡ Запускаем генерацию...")
+                with torch.no_grad():
+                    wav_tensor = self.model.generate([enhanced_prompt])
+
+                # Проверяем результат
+                if wav_tensor is None:
+                    raise RuntimeError("MusicGen вернул None")
+
+                if wav_tensor.numel() == 0:
+                    raise RuntimeError("MusicGen вернул пустой тензор")
+
+                print(f"🔊 Получен тензор: {wav_tensor.shape}")
+
+                # ОБРАБОТКА ТЕНЗОРА
+                audio_array = self._process_tensor(wav_tensor)
+
+                # Проверяем качество аудио
+                rms = np.sqrt(np.mean(audio_array**2))
+                print(f"🔊 RMS уровень: {rms:.6f}")
+
+                if rms < 1e-8:
+                    raise RuntimeError("Сгенерированное аудио слишком тихое")
+
+                # Нормализация
+                if np.max(np.abs(audio_array)) > 0:
+                    audio_array = audio_array / np.max(np.abs(audio_array)) * 0.8
+
+                # КОНВЕРТАЦИЯ В WAV BYTES
+                audio_bytes = self._to_wav_bytes(audio_array)
+
+                if len(audio_bytes) < 1000:
+                    raise RuntimeError(f"Файл слишком мал: {len(audio_bytes)} bytes")
+
+                print(f"✅ Генерация завершена: {len(audio_bytes)} bytes")
+                return audio_bytes
+
+            except Exception as e:
+                print(f"❌ Ошибка генерации: {e}")
+                self.logger.error(f"Generation error: {e}")
+
+                if hasattr(self, "save_intermediate"):
+                    path_base = await self.save_intermediate(base_audio, "00_base_render.wav")
+                    if path_base:
+                        intermediate_files["00_base_render.wav"] = path_base
+
+            # 5) Микс
             mixed_audio = base_audio
             if hasattr(self, "_step_smart_mix"):
                 mixed_audio = await self._step_smart_mix(request, base_audio, structure, genre_info)
                 if not mixed_audio:
                     mixed_audio = base_audio
 
-            # 6) Мастеринг (если есть)
+            # 6) Мастеринг
             mastered_audio = mixed_audio
             mastering_cfg: Dict = {}
             if hasattr(self, "_step_mastering"):
@@ -169,7 +233,7 @@ class WaveDreamPipeline:
             if not mastered_audio:
                 raise RuntimeError("После микса/мастеринга аудио пустое")
 
-            # 7) Верификация качества (безопасно)
+            # 7) Верификация качества
             if hasattr(self, "_step_verify_quality"):
                 quality_report = await self._step_verify_quality(mastered_audio, mastering_cfg)
             quality_score = (quality_report or {}).get("overall_score", 0.0)
@@ -179,13 +243,11 @@ class WaveDreamPipeline:
             if hasattr(self, "save_final_mix"):
                 final_path = await self.save_final_mix(mastered_audio, metadata, filename)
             elif hasattr(self.export_manager, "save_audio_bytes"):
-                # Резервный путь через export_manager
                 project_dir = self.export_manager.create_project_dir(getattr(self, "_current_project_name", "project"))
                 final_path = self.export_manager.save_audio_bytes(mastered_audio, os.path.join(project_dir, filename))
 
             # --- ЖЁСТКАЯ ПРОВЕРКА ИТОГА ---
             if not final_path or not os.path.exists(final_path):
-                # Если нет финального файла и даже промежуточных нет — считаем провалом
                 files_count = len(intermediate_files)
                 raise RuntimeError(f"Экспорт не создал финальный файл (intermediate: {files_count}, final_path: {final_path})")
 
@@ -201,7 +263,6 @@ class WaveDreamPipeline:
 
         except Exception as e:
             self.logger.error("❌ Ошибка генерации: %s", e, exc_info=True)
-            # Безопасно берём скор, даже если отчёта нет/сломался
             safe_score = 0.0
             if isinstance(quality_report, dict):
                 safe_score = float(quality_report.get("overall_score") or 0.0)
@@ -213,6 +274,7 @@ class WaveDreamPipeline:
                 error_message=str(e),
                 intermediate_files=intermediate_files
             )
+
 
     async def save_intermediate(self, name: str, project_name: str, audio: bytes) -> Optional[str]:
         """
@@ -582,7 +644,7 @@ class WaveDreamPipeline:
         self, request: GenerationRequest, metadata: Dict, 
         genre_info: Dict, structure: Dict
     ) -> bytes:
-        """Этап 5: Генерация основы через MusicGen"""
+        """Этап 5: Генерация основы через MusicGen - ИСПРАВЛЕНО"""
         start_time = time.time()
         
         # Создаём улучшенный промпт для MusicGen
@@ -595,21 +657,35 @@ class WaveDreamPipeline:
         self.logger.info(f"  🎼 MusicGen промпт: '{enhanced_prompt[:100]}...'")
         self.logger.info(f"  ⏱️ Длительность: {duration}с")
         
-        # Генерируем базовую дорожку
-        base_audio = await self.musicgen_engine.generate(
-            prompt=enhanced_prompt,
-            duration=duration,
-            temperature=metadata.get("creativity_factor", 0.7),
-            genre_hint=genre_info["name"]
-        )
-        
-        processing_time = time.time() - start_time
-        self._performance_stats["musicgen_time"] = processing_time
-        
-        self.logger.info(f"  🎼 Базовая дорожка сгенерирована: {len(base_audio)} bytes")
-        self.logger.info(f"  ⏱️ Время обработки: {processing_time:.2f}с")
-        
-        return base_audio
+        try:
+            # Генерируем базовую дорожку
+            base_audio = await self.musicgen_engine.generate(
+                prompt=enhanced_prompt,
+                duration=duration,
+                temperature=metadata.get("creativity_factor", 0.7),
+                genre_hint=genre_info["name"]
+            )
+            
+            # КРИТИЧЕСКАЯ ПРОВЕРКА - НЕ ПУСТОЕ ЛИ АУДИО
+            if not base_audio or len(base_audio) < 1000:
+                raise RuntimeError(f"MusicGen вернул пустое/маленькое аудио: {len(base_audio) if base_audio else 0} bytes")
+            
+            processing_time = time.time() - start_time
+            self._performance_stats["musicgen_time"] = processing_time
+            
+            self.logger.info(f"  ✅ Базовая дорожка сгенерирована: {len(base_audio)} bytes")
+            self.logger.info(f"  ⏱️ Время обработки: {processing_time:.2f}с")
+            
+            return base_audio
+            
+        except Exception as e:
+            processing_time = time.time() - start_time
+            self._performance_stats["musicgen_time"] = processing_time
+            
+            self.logger.error(f"  ❌ Критическая ошибка генерации базы: {e}")
+            
+            # ВМЕСТО FALLBACK - ВЫБРАСЫВАЕМ ОШИБКУ НАВЕРХ
+            raise RuntimeError(f"Базовый генератор не вернул аудио: {e}")
     
     async def _step_create_stems(
         self, selected_samples: List[Dict], structure: Dict, genre_info: Dict
