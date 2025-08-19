@@ -55,10 +55,20 @@ class MusicGenEngine:
     Создает музыкально осмысленные треки вместо шума
     """
     
-    def __init__(self, fallback_engine=None):
-        self.logger = logging.getLogger(__name__)
-        self.sample_rate = 44100
-        self.fallback_engine = fallback_engine
+    def __init__(self, model_path=None, device=None, logger=None):
+        # Логгер
+        self.logger = logger or logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+
+        # Устройство
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        # Путь к модели
+        if model_name is None:
+            model_name = r"D:\2027\audiocraft\audiocraft\models\facebook\musicgen-medium"
+
+        self.logger.info(f"Загружаем модель MusicGen из {model_path} на {self.device}...")
+        self.model = MusicGen.get_pretrained(model_path).to(self.device)
         
     def generate_musical_track(
         self, 
@@ -486,7 +496,6 @@ class MusicGenEngine:
 class MusicGenEngine:
     """
     ИСПРАВЛЕННЫЙ MusicGenEngine с надежным fallback режимом
-    Теперь ВСЕГДА работает, даже если MusicGen не доступен
     """
     
     def __init__(self, model_name: str = "facebook/musicgen-medium"):
@@ -496,7 +505,7 @@ class MusicGenEngine:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         # Создаем fallback синтезатор
-        self.fallback_engine = MusicGenEngine()
+        self.fallback_engine = None
         
         # Попытка загрузки MusicGen (но не критично если не получится)
         self.musicgen_available = self._try_load_musicgen()
