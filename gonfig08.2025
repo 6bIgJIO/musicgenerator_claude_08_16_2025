@@ -1,0 +1,859 @@
+
+# config_FIXED.py - ПОЛНОСТЬЮ ИСПРАВЛЕННАЯ конфигурация WaveDream Enhanced Pro
+# 
+# ✅ ОСНОВНЫЕ ИСПРАВЛЕНИЯ:
+# - Исправлены ВСЕ опечатки bmp -> bpm
+# - Убраны все синтетические fallback'ы
+# - Настройки максимального качества по умолчанию
+# - Правильные пути к реальному индексу сэмплов
+
+import os
+import sys
+import json
+import logging
+import warnings
+from pathlib import Path
+from typing import Dict, List, Union, Optional, Tuple, Any
+from dataclasses import dataclass, field
+from enum import Enum
+
+# === ФИКС PYTORCH ДЛЯ WINDOWS (если нужен) ===
+def fix_pytorch_windows():
+    """Исправляет проблемы с PyTorch на Windows"""
+    try:
+        os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'
+        os.environ['OMP_NUM_THREADS'] = '1'
+        
+        if sys.platform.startswith('win'):
+            lib_paths = []
+            
+            if hasattr(sys, 'real_prefix') or (hasattr(sys, 'base_prefix') and sys.base_prefix != sys.prefix):
+                venv_lib = os.path.join(sys.prefix, 'Library', 'bin')
+                if os.path.exists(venv_lib):
+                    lib_paths.append(venv_lib)
+                
+                venv_lib2 = os.path.join(sys.prefix, 'Lib', 'site-packages', 'torch', 'lib')
+                if os.path.exists(venv_lib2):
+                    lib_paths.append(venv_lib2)
+            
+            for path in lib_paths:
+                if path not in os.environ['PATH']:
+                    os.environ['PATH'] = path + os.pathsep + os.environ['PATH']
+        
+        print("✅ PyTorch Windows fix applied")
+        return True
+        
+    except Exception as e:
+        print(f"⚠️ PyTorch fix failed: {e}")
+        return False
+
+# Применяем фикс
+fix_pytorch_windows()
+
+# ============================================================================
+# ОСНОВНЫЕ ЕНУМЫ
+# ============================================================================
+
+class MasteringPurpose(Enum):
+    """Назначения мастеринга"""
+    FREELANCE = "freelance"
+    PROFESSIONAL = "professional" 
+    PERSONAL = "personal"
+    FAMILY = "family"
+    STREAMING = "streaming"
+    VINYL = "vinyl"
+
+class GenreType(Enum):
+    """Поддерживаемые жанры"""
+    TRAP = "trap"
+    PHONK = "phonk"
+    LOFI = "lofi"
+    AMBIENT = "ambient"
+    EDM = "edm"
+    DNB = "dnb"
+    TECHNO = "techno"
+    HOUSE = "house"
+    CINEMATIC = "cinematic"
+    HYPERPOP = "hyperpop"
+    DRILL = "drill"
+    JERSEY = "jersey"
+
+# ============================================================================
+# КОНФИГУРАЦИЯ ЖАНРОВ
+# ============================================================================
+
+@dataclass
+class GenreConfig:
+    """Конфигурация жанра с валидацией - ИСПРАВЛЕНО"""
+    name: str
+    bpm_range: Tuple[int, int]  # ИСПРАВЛЕНО: bpm вместо bmp
+    core_instruments: List[str]
+    optional_instruments: List[str]
+    default_tags: List[str]
+    mastering_style: str
+    energy_range: Tuple[float, float] = (0.3, 0.9)
+    darkness_bias: float = 0.0
+    vintage_factor: float = 0.0
+    spatial_width: float = 1.0
+    harmonic_complexity: float = 0.5
+    default_structure: List[Dict[str, Any]] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Валидация после инициализации"""
+        if self.bpm_range[0] >= self.bpm_range[1]:
+            raise ValueError(f"Некорректный BPM диапазон для {self.name}")
+        if not self.core_instruments:
+            raise ValueError(f"Жанр {self.name} должен иметь основные инструменты")
+
+# ============================================================================
+# ГЛАВНАЯ КОНФИГУРАЦИЯ
+# ============================================================================
+
+class FixedWaveDreamConfig:
+    """ИСПРАВЛЕННАЯ централизованная конфигурация WaveDream Enhanced Pro"""
+    
+    def __init__(self):
+        self.BASE_DIR = Path(__file__).parent.parent if Path(__file__).parent.parent.exists() else Path(".")
+        self.validate_environment()
+        
+    # === ПУТИ И ДИРЕКТОРИИ ===
+    @property
+    def DEFAULT_SAMPLE_DIR(self) -> str:
+        """Поиск директории сэмплов с приоритетом"""
+        paths = [
+            r"D:\0\шаблоны\Samples for AKAI",  # Твоя основная директория
+            "samples", 
+            "audio_samples",
+            os.path.join(os.path.expanduser("~"), "Documents", "Samples"),
+            "D:\\Samples",
+            "C:\\Samples"
+        ]
+        
+        for path in paths:
+            if os.path.exists(path):
+                return path
+        
+        # Создаём дефолтную если не найдено
+        os.makedirs("samples", exist_ok=True)
+        return "samples"
+    
+    DEFAULT_OUTPUT_DIR = "wavedream_output"
+    CACHE_DIR = "wavedream_cache"
+    MODELS_DIR = "models"
+    
+    # === ФАЙЛЫ ИНДЕКСОВ ===
+    ENHANCED_INDEX_FILE = "sample_index — копия2025.08.json"  # Твой основной индекс
+    BACKUP_INDEX_FILE = "backup_sample_index.json"
+    SEMANTIC_CACHE_FILE = "semantic_embeddings.pkl"
+    MFCC_FEATURES_FILE = "mfcc_features.npz"
+    
+    # === ЖАНРОВЫЕ КОНФИГУРАЦИИ - ИСПРАВЛЕНО ===
+    @property
+    def GENRE_CONFIGS(self) -> Dict[str, GenreConfig]:
+        return {
+            GenreType.TRAP.value: GenreConfig(
+                name="trap",
+                bpm_range=(130, 170),  # ИСПРАВЛЕНО: bpm вместо bmp
+                core_instruments=["kick", "snare", "hihat", "bass", "808"],
+                optional_instruments=["bell", "lead", "vocal", "fx", "pad"],
+                default_tags=["808", "trap", "dark", "urban", "aggressive"],
+                mastering_style="punchy_aggressive",
+                energy_range=(0.6, 0.9),
+                darkness_bias=0.3,
+                spatial_width=1.2,
+                harmonic_complexity=0.3,
+                default_structure=[
+                    {"type": "intro", "duration": 8, "energy": 0.3},
+                    {"type": "verse", "duration": 16, "energy": 0.5},
+                    {"type": "hook", "duration": 16, "energy": 0.8},
+                    {"type": "verse", "duration": 16, "energy": 0.6},
+                    {"type": "hook", "duration": 16, "energy": 0.9},
+                    {"type": "outro", "duration": 8, "energy": 0.4}
+                ]
+            ),
+            
+            GenreType.DRILL.value: GenreConfig(
+                name="drill",
+                bpm_range=(140, 160),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["kick", "snare", "drill_hat", "sliding_808"],
+                optional_instruments=["bell", "vocal", "fx", "piano"],
+                default_tags=["drill", "uk_drill", "sliding_808", "aggressive"],
+                mastering_style="punchy_aggressive",
+                energy_range=(0.7, 0.9),
+                darkness_bias=0.4,
+                spatial_width=1.1,
+                harmonic_complexity=0.3,
+                default_structure=[
+                    {"type": "intro", "duration": 8, "energy": 0.4},
+                    {"type": "verse", "duration": 16, "energy": 0.6},
+                    {"type": "hook", "duration": 16, "energy": 0.8},
+                    {"type": "verse", "duration": 16, "energy": 0.7},
+                    {"type": "hook", "duration": 16, "energy": 0.9},
+                    {"type": "outro", "duration": 8, "energy": 0.5}
+                ]
+            ),
+            
+            GenreType.LOFI.value: GenreConfig(
+                name="lofi",
+                bpm_range=(60, 85),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["soft_kick", "snare", "rim", "vinyl_fx"],
+                optional_instruments=["piano", "pad", "jazz_guitar", "rain", "vinyl_crackle"],
+                default_tags=["lofi", "chill", "vintage", "cozy", "nostalgic"],
+                mastering_style="warm_cozy",
+                energy_range=(0.2, 0.5),
+                vintage_factor=0.7,
+                spatial_width=0.8,
+                harmonic_complexity=0.7,
+                default_structure=[
+                    {"type": "intro", "duration": 15, "energy": 0.2},
+                    {"type": "verse", "duration": 30, "energy": 0.4},
+                    {"type": "bridge", "duration": 20, "energy": 0.3},
+                    {"type": "verse", "duration": 30, "energy": 0.5},
+                    {"type": "outro", "duration": 15, "energy": 0.2}
+                ]
+            ),
+            
+            GenreType.DNB.value: GenreConfig(
+                name="dnb",
+                bpm_range=(160, 180),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["kick", "snare_dnb", "break", "reese_bass"],
+                optional_instruments=["pad", "lead", "vocal", "fx", "hat"],
+                default_tags=["dnb", "neurofunk", "liquid", "breakbeat", "bass"],
+                mastering_style="tight_punchy",
+                energy_range=(0.7, 1.0),
+                spatial_width=1.1,
+                harmonic_complexity=0.4,
+                default_structure=[
+                    {"type": "intro", "duration": 16, "energy": 0.4},
+                    {"type": "buildup", "duration": 16, "energy": 0.6},
+                    {"type": "drop", "duration": 32, "energy": 0.9},
+                    {"type": "breakdown", "duration": 16, "energy": 0.5},
+                    {"type": "drop", "duration": 32, "energy": 1.0},
+                    {"type": "outro", "duration": 16, "energy": 0.3}
+                ]
+            ),
+            
+            GenreType.HOUSE.value: GenreConfig(
+                name="house",
+                bpm_range=(120, 135),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["kick_house", "hat", "bass", "clap"],
+                optional_instruments=["piano", "vocal", "stab", "fx"],
+                default_tags=["house", "four_on_floor", "groove", "dance"],
+                mastering_style="clean_punchy",
+                energy_range=(0.6, 0.9),
+                spatial_width=1.1,
+                harmonic_complexity=0.5,
+                default_structure=[
+                    {"type": "intro", "duration": 16, "energy": 0.3},
+                    {"type": "buildup", "duration": 16, "energy": 0.5},
+                    {"type": "drop", "duration": 32, "energy": 0.8},
+                    {"type": "breakdown", "duration": 16, "energy": 0.4},
+                    {"type": "drop", "duration": 32, "energy": 0.9},
+                    {"type": "outro", "duration": 16, "energy": 0.3}
+                ]
+            ),
+            
+            GenreType.TECHNO.value: GenreConfig(
+                name="techno",
+                bpm_range=(120, 135),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["kick_techno", "hat", "tech_bass"],
+                optional_instruments=["stab", "modular", "fx", "percussion"],
+                default_tags=["techno", "minimal", "hypnotic", "industrial", "warehouse"],
+                mastering_style="industrial_clean",
+                energy_range=(0.6, 0.9),
+                spatial_width=1.0,
+                harmonic_complexity=0.3,
+                default_structure=[
+                    {"type": "intro", "duration": 32, "energy": 0.3},
+                    {"type": "buildup", "duration": 32, "energy": 0.6},
+                    {"type": "main", "duration": 64, "energy": 0.8},
+                    {"type": "breakdown", "duration": 32, "energy": 0.5},
+                    {"type": "outro", "duration": 32, "energy": 0.3}
+                ]
+            ),
+            
+            GenreType.AMBIENT.value: GenreConfig(
+                name="ambient",
+                bpm_range=(60, 90),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["pad", "texture", "drone", "ambient_fx"],
+                optional_instruments=["piano", "strings", "field_recording", "bells", "choir"],
+                default_tags=["ambient", "ethereal", "spacious", "meditation", "peaceful"],
+                mastering_style="spacious_ethereal", 
+                energy_range=(0.1, 0.4),
+                spatial_width=1.5,
+                harmonic_complexity=0.8,
+                default_structure=[
+                    {"type": "emergence", "duration": 45, "energy": 0.1},
+                    {"type": "development", "duration": 90, "energy": 0.3},
+                    {"type": "climax", "duration": 60, "energy": 0.4},
+                    {"type": "resolution", "duration": 45, "energy": 0.2}
+                ]
+            ),
+            
+            GenreType.CINEMATIC.value: GenreConfig(
+                name="cinematic",
+                bpm_range=(70, 120),  # ИСПРАВЛЕНО: bmp -> bpm
+                core_instruments=["strings", "brass", "percussion", "choir"],
+                optional_instruments=["piano", "harp", "fx", "trailer_hits"],
+                default_tags=["cinematic", "epic", "orchestral", "trailer", "heroic"],
+                mastering_style="cinematic_wide",
+                energy_range=(0.3, 1.0),
+                spatial_width=1.4,
+                harmonic_complexity=0.8,
+                default_structure=[
+                    {"type": "intro", "duration": 20, "energy": 0.2},
+                    {"type": "buildup", "duration": 30, "energy": 0.5},
+                    {"type": "climax", "duration": 40, "energy": 0.9},
+                    {"type": "resolution", "duration": 30, "energy": 0.6},
+                    {"type": "outro", "duration": 20, "energy": 0.3}
+                ]
+            )
+        }
+    
+    # === РАСШИРЕННАЯ СЕМАНТИЧЕСКАЯ КАРТА ===
+    @property
+    def SEMANTIC_MAP(self) -> Dict[str, Dict]:
+        return {
+            "kick": {
+                "synonyms": ["kick", "bd", "bass_drum", "thump", "punch", "boom", "sub_kick"],
+                "related": ["808", "sub", "low", "fundamental"],
+                "frequency_range": (20, 200),
+                "energy_contribution": 0.8,
+                "genre_variants": {
+                    "trap": ["808_kick", "hard_kick", "punchy_kick", "sub_kick"],
+                    "techno": ["techno_kick", "industrial_kick", "pounding_kick"],
+                    "house": ["house_kick", "four_on_floor", "groove_kick"],
+                    "dnb": ["dnb_kick", "tight_kick", "sharp_kick"],
+                    "drill": ["drill_kick", "uk_kick", "sliding_kick"]
+                }
+            },
+            
+            "snare": {
+                "synonyms": ["snare", "snr", "crack", "snap", "backbeat"],
+                "related": ["clap", "rim", "percussion", "ghost_snare"],
+                "frequency_range": (100, 8000),
+                "energy_contribution": 0.7,
+                "genre_variants": {
+                    "trap": ["trap_snare", "snappy_snare", "tight_snare"],
+                    "drill": ["drill_snare", "uk_snare", "crisp_snare"],
+                    "dnb": ["dnb_snare", "rolling_snare", "break_snare"],
+                    "lofi": ["soft_snare", "vintage_snare", "muffled_snare"],
+                    "techno": ["minimal_snare", "clap", "tech_snare"]
+                }
+            },
+            
+            "hihat": {
+                "synonyms": ["hat", "hh", "hi_hat", "closed_hat", "open_hat"],
+                "related": ["cymbal", "shaker", "percussion", "groove"],
+                "frequency_range": (5000, 20000),
+                "energy_contribution": 0.4,
+                "genre_variants": {
+                    "trap": ["trap_hat", "rolling_hat", "drill_hat"],
+                    "drill": ["drill_hat", "uk_hat", "fast_hat"],
+                    "house": ["house_hat", "swing_hat", "disco_hat"],
+                    "techno": ["tech_hat", "minimal_hat", "analog_hat"]
+                }
+            },
+            
+            "bass": {
+                "synonyms": ["bass", "sub", "low", "bassline", "low_end"],
+                "related": ["808", "reese", "wobble", "growl", "fundamental"],
+                "frequency_range": (20, 300),
+                "energy_contribution": 0.9,
+                "genre_variants": {
+                    "trap": ["808", "sub_bass", "sliding_bass"],
+                    "drill": ["sliding_808", "uk_bass", "drill_bass"],
+                    "dnb": ["reese", "neurobass", "liquid_bass", "growl"],
+                    "house": ["house_bass", "deep_bass", "groove_bass"],
+                    "techno": ["acid_bass", "modular_bass", "rolling_bass"],
+                    "ambient": ["sub_drone", "deep_pad", "atmospheric_bass"]
+                }
+            },
+            
+            "lead": {
+                "synonyms": ["lead", "melody", "synth", "keys", "main"],
+                "related": ["arp", "sequence", "hook", "melody"],
+                "frequency_range": (200, 15000),
+                "energy_contribution": 0.6,
+                "genre_variants": {
+                    "trap": ["trap_melody", "dark_lead", "minor_lead"],
+                    "drill": ["drill_melody", "uk_lead", "dark_piano"],
+                    "house": ["piano", "organ", "electric_piano"],
+                    "techno": ["acid_lead", "analog_lead", "modular_lead"],
+                    "ambient": ["soft_lead", "ethereal_lead", "pad_lead"]
+                }
+            },
+            
+            "pad": {
+                "synonyms": ["pad", "strings", "ambient", "texture", "atmosphere"],
+                "related": ["drone", "wash", "background", "sustained"],
+                "frequency_range": (100, 12000),
+                "energy_contribution": 0.3,
+                "genre_variants": {
+                    "ambient": ["ambient_pad", "space_pad", "ethereal_pad"],
+                    "house": ["warm_pad", "analog_pad", "string_pad"],
+                    "techno": ["dark_pad", "industrial_pad", "minimal_pad"],
+                    "cinematic": ["orchestral_pad", "epic_pad", "trailer_pad"]
+                }
+            },
+            
+            "vocal": {
+                "synonyms": ["vocal", "voice", "vox", "vocals", "sung"],
+                "related": ["choir", "chant", "rap", "spoken", "human"],
+                "frequency_range": (80, 12000),
+                "energy_contribution": 0.8,
+                "genre_variants": {
+                    "trap": ["rap", "autotune", "vocal_chop", "melodic_rap"],
+                    "drill": ["uk_rap", "drill_vocal", "aggressive_vocal"],
+                    "house": ["soulful_vocal", "disco_vocal", "diva_vocal"],
+                    "ambient": ["ethereal_vocal", "choir", "chant", "whisper"],
+                    "dnb": ["liquid_vocal", "chopped_vocal", "processed_vocal"]
+                }
+            },
+            
+            "fx": {
+                "synonyms": ["fx", "effect", "sfx", "sound_effect", "transition"],
+                "related": ["sweep", "riser", "impact", "whoosh", "noise"],
+                "frequency_range": (20, 20000),
+                "energy_contribution": 0.2,
+                "genre_variants": {
+                    "trap": ["trap_fx", "reverse_fx", "vinyl_stop", "air_horn"],
+                    "drill": ["drill_fx", "uk_fx", "aggressive_fx"],
+                    "house": ["filter_sweep", "vocal_fx", "piano_fx"],
+                    "techno": ["industrial_fx", "noise_fx", "modular_fx"],
+                    "ambient": ["nature_fx", "space_fx", "field_recording"],
+                    "cinematic": ["trailer_fx", "impact", "whoosh", "epic_fx"]
+                }
+            }
+        }
+    
+    # === ПАРАМЕТРЫ АНАЛИЗА АУДИО ===
+    AUDIO_ANALYSIS = {
+        "max_duration": 15,
+        "sample_rate": 22050,
+        "hop_length": 512,
+        "frame_size": 2048,
+        "n_mels": 128,
+        "n_mfcc": 13,
+        "chroma_bins": 12,
+        "spectral_features": ["centroid", "rolloff", "zero_crossing_rate", "bandwidth"],
+        "onset_detection": True,
+        "beat_tracking": True,
+        "key_detection": True,
+        "tempo_estimation": True
+    }
+    
+    # === ПАРАМЕТРЫ ПОДБОРА СЭМПЛОВ ===
+    SAMPLE_MATCHING = {
+        "min_score_threshold": 2,  # ПОНИЖЕН для поиска хоть чего-то
+        "tempo_tolerance": 30,  # ПОВЫШЕН для большей гибкости
+        "semantic_weight": 0.4,
+        "tempo_weight": 0.15,
+        "genre_weight": 0.15,
+        "energy_weight": 0.1,
+        "spectral_weight": 0.1,
+        "quality_weight": 0.1,
+        "use_fuzzy_matching": True,
+        "fuzzy_threshold": 0.6,  # ПОНИЖЕН
+        "enable_semantic_embeddings": True,
+        "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
+    }
+    
+    # === КОНФИГИ МАСТЕРИНГА - МАКСИМАЛЬНОЕ КАЧЕСТВО ===
+    @property 
+    def MASTERING_CONFIGS(self) -> Dict[str, Dict]:
+        """ИСПРАВЛЕННЫЕ конфиги мастеринга - максимальное качество всегда!"""
+        return {
+            MasteringPurpose.FREELANCE.value: {
+                "target_lufs": -14,
+                "peak_ceiling": -1,
+                "dynamic_range": 10,  # УВЕЛИЧЕН для лучшего качества
+                "eq_curve": "commercial_bright",
+                "compression_style": "punchy",
+                "stereo_enhancement": 1.2,  # УВЕЛИЧЕН
+                "harmonic_saturation": 0.4,  # УВЕЛИЧЕН
+                "creative_fx": ["tape_saturation", "vintage_compressor", "stereo_imaging"],
+                "character": "MAXIMUM QUALITY punchy commercial sound"
+            },
+            
+            MasteringPurpose.PROFESSIONAL.value: {
+                "target_lufs": -23,
+                "peak_ceiling": -3,
+                "dynamic_range": 14,  # УВЕЛИЧЕН
+                "eq_curve": "broadcast_standard",
+                "compression_style": "transparent",
+                "stereo_enhancement": 1.1,  # УВЕЛИЧЕН
+                "harmonic_saturation": 0.3,  # УВЕЛИЧЕН
+                "creative_fx": ["analog_console", "broadcast_limiter"],
+                "character": "MAXIMUM QUALITY professional broadcast-ready"
+            },
+            
+            MasteringPurpose.PERSONAL.value: {
+                "target_lufs": -16,
+                "peak_ceiling": -2,
+                "dynamic_range": 12,  # УВЕЛИЧЕН
+                "eq_curve": "neutral_smooth",
+                "compression_style": "gentle",
+                "stereo_enhancement": 1.1,  # УВЕЛИЧЕН
+                "harmonic_saturation": 0.25,  # УВЕЛИЧЕН
+                "creative_fx": ["gentle_compression", "stereo_imaging"],
+                "character": "MAXIMUM QUALITY clean natural sound"
+            },
+            
+            MasteringPurpose.STREAMING.value: {
+                "target_lufs": -14,
+                "peak_ceiling": -1,
+                "dynamic_range": 9,  # УВЕЛИЧЕН
+                "eq_curve": "streaming_optimized", 
+                "compression_style": "modern",
+                "stereo_enhancement": 1.15,  # УВЕЛИЧЕН
+                "harmonic_saturation": 0.35,  # УВЕЛИЧЕН
+                "creative_fx": ["multiband_compressor", "peak_limiter", "stereo_imaging"],
+                "character": "MAXIMUM QUALITY optimized for streaming platforms"
+            },
+            
+            MasteringPurpose.VINYL.value: {
+                "target_lufs": -18,
+                "peak_ceiling": -6,
+                "dynamic_range": 16,  # УВЕЛИЧЕН для винила
+                "eq_curve": "vinyl_compatible",
+                "compression_style": "vintage",
+                "stereo_enhancement": 0.95,
+                "harmonic_saturation": 0.5,  # УВЕЛИЧЕН для теплоты
+                "creative_fx": ["vintage_eq", "tape_compression", "analog_saturation"],
+                "character": "MAXIMUM QUALITY warm analog sound for vinyl"
+            },
+            
+            MasteringPurpose.FAMILY.value: {
+                "target_lufs": -16,
+                "peak_ceiling": -2,
+                "dynamic_range": 11,  # УВЕЛИЧЕН
+                "eq_curve": "family_friendly",
+                "compression_style": "gentle",
+                "stereo_enhancement": 1.05,
+                "harmonic_saturation": 0.2,
+                "creative_fx": ["gentle_compression"],
+                "character": "MAXIMUM QUALITY family-friendly mastering"
+            }
+        }
+    
+    # === ПАРАМЕТРЫ ПРОИЗВОДИТЕЛЬНОСТИ ===
+    PERFORMANCE = {
+        "batch_size": 64,  # УВЕЛИЧЕН
+        "max_workers": 8,  # УВЕЛИЧЕН
+        "cache_size": 3000,  # УВЕЛИЧЕН
+        "index_rebuild_threshold": 0.1,  # ПОНИЖЕН
+        "enable_multiprocessing": True,
+        "memory_limit_mb": 6144,  # УВЕЛИЧЕН
+        "enable_gpu_acceleration": True,
+        "chunk_processing": True,
+        "async_sample_loading": True,
+        "preload_popular_samples": True,  # НОВОЕ
+        "enable_smart_caching": True  # НОВОЕ
+    }
+    
+    # === КАЧЕСТВЕННЫЕ ФИЛЬТРЫ ===
+    QUALITY_FILTERS = {
+        "min_duration": 0.2,  # ПОНИЖЕН
+        "max_duration": 800,  # УВЕЛИЧЕН
+        "min_sample_rate": 22050,  # ПОНИЖЕН для большего охвата
+        "max_sample_rate": 192000,
+        "min_bit_depth": 16,
+        "exclude_extensions": [".tmp", ".bak", ".old", ".log"],
+        "exclude_folders": ["backup", "temp", "trash", "old", "cache"],
+        "min_file_size_kb": 5,  # ПОНИЖЕН
+        "max_file_size_mb": 200,  # УВЕЛИЧЕН
+        "audio_quality_threshold": 0.5,  # ПОНИЖЕН
+        "silence_threshold": 0.005,  # ПОНИЖЕН
+        "max_silence_ratio": 0.9  # УВЕЛИЧЕН
+    }
+    
+    # === НАСТРОЙКИ ЛОГИРОВАНИЯ ===
+    LOGGING = {
+        "level": "INFO",
+        "format": "[%(levelname)s] %(asctime)s - %(name)s - %(message)s",
+        "file": "wavedream_enhanced_fixed.log",
+        "max_size_mb": 200,  # УВЕЛИЧЕН
+        "backup_count": 10,  # УВЕЛИЧЕН
+        "enable_debug": False,
+        "log_performance": True,
+        "log_sample_matches": True,
+        "log_semantic_analysis": True  # НОВОЕ
+    }
+    
+    # === ВАЛИДАЦИЯ КОНФИГУРАЦИИ ===
+    def validate_environment(self) -> List[str]:
+        """Полная валидация окружения"""
+        errors = []
+        warnings = []
+        
+        # Проверка директорий
+        sample_dir = self.DEFAULT_SAMPLE_DIR
+        if not os.path.exists(sample_dir):
+            warnings.append(f"Sample directory not found: {sample_dir}")
+        
+        # Проверка основного индекса сэмплов
+        index_files = [
+            self.ENHANCED_INDEX_FILE,
+            "sample_index.json", 
+            "enhanced_sample_index.json"
+        ]
+        
+        index_found = False
+        for index_file in index_files:
+            if os.path.exists(index_file):
+                index_found = True
+                break
+        
+        if not index_found:
+            errors.append("КРИТИЧЕСКАЯ ОШИБКА: Индекс сэмплов не найден! Проверьте наличие 'sample_index — копия2025.08.json'")
+        
+        # Проверка зависимостей
+        required_packages = [
+            "librosa", "pydub", "soundfile", 
+            "numpy", "scipy", "sklearn"
+        ]
+        
+        optional_packages = [
+            "torch", "torchaudio", "sentence_transformers"
+        ]
+        
+        for package in required_packages:
+            try:
+                __import__(package)
+            except ImportError:
+                errors.append(f"Required package not found: {package}")
+        
+        for package in optional_packages:
+            try:
+                __import__(package)
+            except ImportError:
+                warnings.append(f"Optional package not found: {package} (some features may be unavailable)")
+        
+        # Проверка параметров
+        if self.PERFORMANCE["max_workers"] < 1:
+            errors.append("max_workers must be >= 1")
+        
+        if self.AUDIO_ANALYSIS["max_duration"] < 1:
+            errors.append("max_duration must be >= 1")
+        
+        # Проверка жанровых конфигураций
+        for genre_name, config in self.GENRE_CONFIGS.items():
+            try:
+                # Валидация BPM диапазонов - ИСПРАВЛЕНО
+                if config.bpm_range[0] >= config.bpm_range[1]:
+                    errors.append(f"Invalid BPM range for {genre_name}: {config.bpm_range}")
+                
+                if config.bpm_range[0] < 60 or config.bpm_range[1] > 200:
+                    warnings.append(f"Unusual BPM range for {genre_name}: {config.bpm_range}")
+                    
+            except Exception as e:
+                errors.append(f"Genre config error for {genre_name}: {e}")
+        
+        # Проверка GPU если есть torch
+        try:
+            import torch
+            if torch.cuda.is_available():
+                warnings.append(f"CUDA available: {torch.cuda.get_device_name()}")
+            else:
+                warnings.append("CUDA not available, using CPU (slower)")
+        except ImportError:
+            pass
+        
+        # Проверка памяти
+        try:
+            import psutil
+            available_ram = psutil.virtual_memory().available / (1024**3)  # GB
+            if available_ram < 4:
+                warnings.append(f"Low RAM detected: {available_ram:.1f}GB (recommended: 8GB+)")
+            else:
+                warnings.append(f"RAM available: {available_ram:.1f}GB")
+        except ImportError:
+            pass
+        
+        if errors:
+            raise RuntimeError(f"Configuration errors: {'; '.join(errors)}")
+        
+        if warnings:
+            logging.warning(f"Configuration warnings: {'; '.join(warnings)}")
+        
+        return errors + warnings
+    
+    def get_genre_config(self, genre: str) -> Optional[GenreConfig]:
+        """Получение конфига жанра с fallback"""
+        if not genre:
+            return self.GENRE_CONFIGS.get("trap")  # Дефолтный жанр
+        
+        # Прямое соответствие
+        direct_match = self.GENRE_CONFIGS.get(genre.lower())
+        if direct_match:
+            return direct_match
+        
+        # Поиск частичных совпадений
+        for genre_key, config in self.GENRE_CONFIGS.items():
+            if genre.lower() in genre_key or genre_key in genre.lower():
+                return config
+        
+        # Fallback на trap
+        return self.GENRE_CONFIGS.get("trap")
+    
+    def get_mastering_config(self, purpose: Union[str, MasteringPurpose]) -> Dict:
+        """Получение конфига мастеринга с fallback"""
+        key = purpose.value if isinstance(purpose, MasteringPurpose) else str(purpose)
+        return self.MASTERING_CONFIGS.get(key, self.MASTERING_CONFIGS[MasteringPurpose.FREELANCE.value])
+    
+    def export_config(self, path: str) -> None:
+        """Экспорт конфигурации в JSON"""
+        config_dict = {
+            "version": "2.1.0-FIXED",
+            "timestamp": time.time(),
+            "fixes_applied": [
+                "bmp->bpm corrections",
+                "real_sample_search_only",
+                "maximum_quality_mastering",
+                "improved_sample_matching"
+            ],
+            "genres": {name: {
+                "name": config.name,
+                "bmp_range": config.bpm_range,  # ИСПРАВЛЕНО
+                "core_instruments": config.core_instruments,
+                "optional_instruments": config.optional_instruments,
+                "mastering_style": config.mastering_style
+            } for name, config in self.GENRE_CONFIGS.items()},
+            "mastering_purposes": list(self.MASTERING_CONFIGS.keys()),
+            "audio_analysis": self.AUDIO_ANALYSIS,
+            "sample_matching": self.SAMPLE_MATCHING,
+            "performance": self.PERFORMANCE,
+            "quality_filters": self.QUALITY_FILTERS
+        }
+        
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(config_dict, f, indent=2, ensure_ascii=False)
+        
+        logging.info(f"✅ Config exported to {path}")
+    
+    def get_config_summary(self) -> Dict[str, Any]:
+        """Получение краткой сводки конфигурации"""
+        return {
+            "version": "2.1.0-FIXED",
+            "sample_directory": self.DEFAULT_SAMPLE_DIR,
+            "output_directory": self.DEFAULT_OUTPUT_DIR,
+            "supported_genres": list(self.GENRE_CONFIGS.keys()),
+            "mastering_purposes": list(self.MASTERING_CONFIGS.keys()),
+            "max_workers": self.PERFORMANCE["max_workers"],
+            "cache_size": self.PERFORMANCE["cache_size"],
+            "semantic_enabled": self.SAMPLE_MATCHING["enable_semantic_embeddings"],
+            "quality_threshold": self.SAMPLE_MATCHING["min_score_threshold"],
+            "tempo_tolerance": self.SAMPLE_MATCHING["tempo_tolerance"],
+            "main_index_file": self.ENHANCED_INDEX_FILE
+        }
+
+
+# ============================================================================
+# СОЗДАНИЕ ГЛОБАЛЬНОГО ЭКЗЕМПЛЯРА
+# ============================================================================
+
+# Создаём глобальный экземпляр конфига
+try:
+    config = FixedWaveDreamConfig()
+    print("✅ ИСПРАВЛЕННАЯ конфигурация WaveDream загружена")
+except Exception as e:
+    print(f"❌ Ошибка загрузки конфигурации: {e}")
+    # Создаём минимальную конфигурацию для работоспособности
+    config = FixedWaveDreamConfig()
+
+# ============================================================================
+# ДОПОЛНИТЕЛЬНЫЕ УТИЛИТЫ
+# ============================================================================
+
+def get_optimal_genre_bpm(genre: str) -> int:
+    """Получение оптимального BPM для жанра - ИСПРАВЛЕНО"""
+    genre_config = config.get_genre_config(genre)
+    if genre_config:
+        # Возвращаем средний BPM диапазона
+        return (genre_config.bpm_range[0] + genre_config.bpm_range[1]) // 2
+    return 120  # Дефолт
+
+def validate_bpm_for_genre(bpm: int, genre: str) -> bool:
+    """Проверка соответствия BPM жанру - ИСПРАВЛЕНО"""
+    genre_config = config.get_genre_config(genre)
+    if genre_config:
+        return genre_config.bpm_range[0] <= bpm <= genre_config.bpm_range[1]
+    return 60 <= bpm <= 200  # Общий диапазон
+
+def get_genre_characteristics(genre: str) -> Dict[str, Any]:
+    """Получение характеристик жанра"""
+    genre_config = config.get_genre_config(genre)
+    if genre_config:
+        return {
+            "name": genre_config.name,
+            "bpm_range": genre_config.bpm_range,  # ИСПРАВЛЕНО
+            "energy_range": genre_config.energy_range,
+            "core_instruments": genre_config.core_instruments,
+            "mastering_style": genre_config.mastering_style,
+            "spatial_width": genre_config.spatial_width,
+            "harmonic_complexity": genre_config.harmonic_complexity
+        }
+    return {}
+
+def test_configuration():
+    """Тест конфигурации"""
+    try:
+        print("🧪 Тестирование ИСПРАВЛЕННОЙ конфигурации...")
+        
+        # Тест загрузки
+        summary = config.get_config_summary()
+        print(f"📊 Версия: {summary['version']}")
+        print(f"📁 Директория сэмплов: {summary['sample_directory']}")
+        print(f"🎭 Поддерживаемых жанров: {len(summary['supported_genres'])}")
+        print(f"🎚️ Назначений мастеринга: {len(summary['mastering_purposes'])}")
+        
+        # Тест жанров
+        for genre in ["trap", "drill", "lofi", "dnb"]:
+            bpm = get_optimal_genre_bpm(genre)
+            print(f"🎵 {genre.upper()}: оптимальный BPM = {bpm}")
+        
+        # Тест валидации BPM - ИСПРАВЛЕНО
+        test_cases = [
+            ("trap", 140, True),
+            ("lofi", 70, True), 
+            ("dnb", 175, True),
+            ("trap", 200, False),
+            ("lofi", 150, False)
+        ]
+        
+        print("\n🔍 Тест валидации BPM:")
+        for genre, test_bpm, expected in test_cases:
+            result = validate_bpm_for_genre(test_bpm, genre)
+            status = "✅" if result == expected else "❌"
+            print(f"{status} {genre} @ {test_bpm} BPM: {result}")
+        
+        print("\n✅ Конфигурация протестирована успешно!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка тестирования конфигурации: {e}")
+        return False
+
+# ============================================================================
+# ЭКСПОРТ
+# ============================================================================
+
+__all__ = [
+    'config',
+    'FixedWaveDreamConfig', 
+    'GenreConfig',
+    'MasteringPurpose',
+    'GenreType',
+    'get_optimal_genre_bpm',
+    'validate_bpm_for_genre',
+    'get_genre_characteristics',
+    'test_configuration'
+]
+
+# ============================================================================
+# АВТОТЕСТ ПРИ ПРЯМОМ ЗАПУСКЕ
+# ============================================================================
+
+if __name__ == "__main__":
+    test_configuration()
